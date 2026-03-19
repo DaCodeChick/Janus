@@ -19,9 +19,8 @@ const DEFAULT_ALIGNMENT: u64 = 32;
 
 /// GGUF file handle with memory-mapped data
 pub struct GGUFFile {
-    _mmap: Mmap,
+    mmap: Mmap,
     metadata: GGUFMetadata,
-    #[allow(dead_code)]
     data_offset: usize,
 }
 
@@ -34,7 +33,7 @@ impl GGUFFile {
         let (metadata, data_offset) = Self::parse_header(&mmap)?;
 
         Ok(Self {
-            _mmap: mmap,
+            mmap,
             metadata,
             data_offset,
         })
@@ -53,6 +52,23 @@ impl GGUFFile {
     /// Get a specific metadata value by key
     pub fn get_metadata(&self, key: &str) -> Option<&MetadataValue> {
         self.metadata.metadata.get(key)
+    }
+
+    /// Get the data offset where tensor data starts
+    pub fn data_offset(&self) -> usize {
+        self.data_offset
+    }
+
+    /// Get a slice of tensor data from the mmap
+    pub fn get_tensor_data(&self, tensor: &TensorInfo) -> &[u8] {
+        let start = self.data_offset + tensor.offset as usize;
+        let end = start + tensor.size_bytes() as usize;
+        &self.mmap[start..end]
+    }
+
+    /// Get the entire mmap data (for advanced use)
+    pub fn mmap_data(&self) -> &[u8] {
+        &self.mmap
     }
 
     /// Parse GGUF header and metadata from byte slice

@@ -26,7 +26,12 @@ tokio.workspace = true
 thiserror.workspace = true
 anyhow.workspace = true
 
+# Logging
+tracing.workspace = true
+
 # Numerics
 half.workspace = true
 
 [dev-dependencies]
+tokio = { workspace = true, features = ["full", "test-util"] }
+tempfile = "3.15"
