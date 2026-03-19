@@ -1,0 +1,32 @@
+[package]
+name = "janus-engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+# GGUF parsing
+winnow.workspace = true
+memmap2.workspace = true
+
+# GPU compute
+wgpu.workspace = true
+bytemuck.workspace = true
+pollster.workspace = true
+
+# Plugin loading
+abi_stable.workspace = true
+janus-api = { path = "../janus-api" }
+
+# Async runtime
+tokio.workspace = true
+
+# Error handling
+thiserror.workspace = true
+anyhow.workspace = true
+
+# Numerics
+half.workspace = true
+
+[dev-dependencies]

@@ -1,0 +1,13 @@
+[package]
+name = "instruct-plugin"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+janus-api = { path = "../../janus-api" }
+abi_stable = { workspace = true }
