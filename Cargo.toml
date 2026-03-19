@@ -4,8 +4,8 @@ members = [
     "crates/janus-engine",
     "crates/janus-router",
     "crates/janus-server",
-    "crates/plugins/instruct-plugin",
-    "crates/plugins/roleplay-plugin",
+    "crates/plugins/janus-instruct-plugin",
+    "crates/plugins/janus-roleplay-plugin",
 ]
 
 resolver = "2"
