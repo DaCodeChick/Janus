@@ -22,6 +22,17 @@ pub enum GGMLType {
     I8 = 16,
     I16 = 17,
     I32 = 18,
+    I64 = 19,
+    F64 = 20,
+    IQ2_XXS = 21,
+    IQ2_XS = 22,
+    IQ3_XXS = 23,
+    IQ1_S = 24,
+    IQ4_NL = 25,
+    IQ3_S = 26,
+    IQ2_S = 27,
+    IQ4_XS = 28,
+    IQ1_M = 29,
 }
 
 impl GGMLType {
@@ -45,6 +56,17 @@ impl GGMLType {
             16 => Some(Self::I8),
             17 => Some(Self::I16),
             18 => Some(Self::I32),
+            19 => Some(Self::I64),
+            20 => Some(Self::F64),
+            21 => Some(Self::IQ2_XXS),
+            22 => Some(Self::IQ2_XS),
+            23 => Some(Self::IQ3_XXS),
+            24 => Some(Self::IQ1_S),
+            25 => Some(Self::IQ4_NL),
+            26 => Some(Self::IQ3_S),
+            27 => Some(Self::IQ2_S),
+            28 => Some(Self::IQ4_XS),
+            29 => Some(Self::IQ1_M),
             _ => None,
         }
     }
@@ -54,6 +76,7 @@ impl GGMLType {
         match self {
             Self::F32 | Self::I32 => 4,
             Self::F16 | Self::I16 => 2,
+            Self::F64 | Self::I64 => 8,
             Self::I8 => 1,
             // Quantized types use block sizes
             Self::Q4_0 | Self::Q4_1 => 18, // 32 values in 18 bytes
@@ -65,6 +88,16 @@ impl GGMLType {
             Self::Q5_K => 176,             // 256 values in 176 bytes
             Self::Q6_K => 210,             // 256 values in 210 bytes
             Self::Q8_K => 292,             // 256 values in 292 bytes
+            // IQ quantization types (approximate sizes)
+            Self::IQ2_XXS => 66, // 256 values
+            Self::IQ2_XS => 74,  // 256 values
+            Self::IQ3_XXS => 98, // 256 values
+            Self::IQ1_S => 50,   // 256 values
+            Self::IQ4_NL => 136, // 256 values
+            Self::IQ3_S => 110,  // 256 values
+            Self::IQ2_S => 82,   // 256 values
+            Self::IQ4_XS => 136, // 256 values
+            Self::IQ1_M => 56,   // 256 values
         }
     }
 }
@@ -130,7 +163,16 @@ impl TensorInfo {
             | GGMLType::Q4_K
             | GGMLType::Q5_K
             | GGMLType::Q6_K
-            | GGMLType::Q8_K => {
+            | GGMLType::Q8_K
+            | GGMLType::IQ2_XXS
+            | GGMLType::IQ2_XS
+            | GGMLType::IQ3_XXS
+            | GGMLType::IQ1_S
+            | GGMLType::IQ4_NL
+            | GGMLType::IQ3_S
+            | GGMLType::IQ2_S
+            | GGMLType::IQ4_XS
+            | GGMLType::IQ1_M => {
                 let block_size = 256;
                 let num_blocks = (elem_count + block_size - 1) / block_size;
                 num_blocks * elem_size

@@ -1,15 +1,11 @@
 use super::error::{GGUFError, Result};
 use super::types::*;
+use byteorder::{LittleEndian, ReadBytesExt};
 use memmap2::Mmap;
 use std::collections::HashMap;
 use std::fs::File;
+use std::io::{Cursor, Read};
 use std::path::Path;
-use winnow::{
-    binary::{le_f32, le_f64, le_u16, le_u32, le_u64, le_u8},
-    error::ContextError,
-    token::take,
-    Parser,
-};
 
 /// Magic number for GGUF files: "GGUF" in ASCII
 const GGUF_MAGIC: [u8; 4] = [0x47, 0x47, 0x55, 0x46]; // "GGUF"
@@ -59,45 +55,38 @@ impl GGUFFile {
         self.metadata.metadata.get(key)
     }
 
-    /// Parse GGUF header and metadata
+    /// Parse GGUF header and metadata from byte slice
     fn parse_header(data: &[u8]) -> Result<(GGUFMetadata, usize)> {
-        let mut input = data;
+        let mut reader = Cursor::new(data);
 
-        // Parse magic number
-        let magic = parse_magic(&mut input)
-            .map_err(|e| GGUFError::ParseError(format!("Failed to parse magic: {}", e)))?;
+        // Parse and verify magic number
+        let mut magic = [0u8; 4];
+        reader
+            .read_exact(&mut magic)
+            .map_err(|_| GGUFError::IncompleteData("Failed to read magic number".into()))?;
 
         if magic != GGUF_MAGIC {
             return Err(GGUFError::InvalidMagic(magic));
         }
 
         // Parse version
-        let version: u32 =
-            le_u32
-                .parse_next(&mut input)
-                .map_err(|e: winnow::error::ErrMode<ContextError>| {
-                    GGUFError::ParseError(format!("Failed to parse version: {}", e))
-                })?;
+        let version = reader
+            .read_u32::<LittleEndian>()
+            .map_err(|_| GGUFError::IncompleteData("Failed to read version".into()))?;
 
         if version < SUPPORTED_VERSION_MIN || version > SUPPORTED_VERSION_MAX {
             return Err(GGUFError::UnsupportedVersion(version));
         }
 
         // Parse tensor count
-        let tensor_count =
-            le_u64
-                .parse_next(&mut input)
-                .map_err(|e: winnow::error::ErrMode<ContextError>| {
-                    GGUFError::ParseError(format!("Failed to parse tensor count: {}", e))
-                })?;
+        let tensor_count = reader
+            .read_u64::<LittleEndian>()
+            .map_err(|_| GGUFError::IncompleteData("Failed to read tensor count".into()))?;
 
         // Parse metadata KV count
-        let metadata_kv_count =
-            le_u64
-                .parse_next(&mut input)
-                .map_err(|e: winnow::error::ErrMode<ContextError>| {
-                    GGUFError::ParseError(format!("Failed to parse metadata count: {}", e))
-                })?;
+        let metadata_kv_count = reader
+            .read_u64::<LittleEndian>()
+            .map_err(|_| GGUFError::IncompleteData("Failed to read metadata count".into()))?;
 
         let header = GGUFHeader {
             version,
@@ -106,8 +95,7 @@ impl GGUFFile {
         };
 
         // Parse metadata key-value pairs
-        let metadata = parse_metadata_kvs(&mut input, metadata_kv_count as usize)
-            .map_err(|e| GGUFError::ParseError(format!("Failed to parse metadata: {}", e)))?;
+        let metadata = parse_metadata_kvs(&mut reader, metadata_kv_count as usize)?;
 
         // Get alignment from metadata (default to 32)
         let alignment =
@@ -118,11 +106,10 @@ impl GGUFFile {
             };
 
         // Parse tensor info
-        let tensors = parse_tensor_infos(&mut input, tensor_count as usize)
-            .map_err(|e| GGUFError::ParseError(format!("Failed to parse tensor info: {}", e)))?;
+        let tensors = parse_tensor_infos(&mut reader, tensor_count as usize)?;
 
         // Calculate data offset with alignment
-        let header_size = data.len() - input.len();
+        let header_size = reader.position() as usize;
         let data_offset = align_offset(header_size, alignment as usize);
 
         let gguf_metadata = GGUFMetadata {
@@ -136,98 +123,188 @@ impl GGUFFile {
     }
 }
 
-/// Parse magic number
-fn parse_magic<'s>(
-    input: &mut &'s [u8],
-) -> std::result::Result<[u8; 4], winnow::error::ErrMode<ContextError>> {
-    take(4usize).parse_next(input).map(|bytes: &[u8]| {
-        let mut magic = [0u8; 4];
-        magic.copy_from_slice(bytes);
-        magic
-    })
-}
-
 /// Parse a GGUF string (u64 length + UTF-8 bytes)
-fn parse_string<'s>(
-    input: &mut &'s [u8],
-) -> std::result::Result<String, winnow::error::ErrMode<ContextError>> {
-    let len = le_u64.parse_next(input)?;
-    let bytes = take(len as usize).parse_next(input)?;
-    Ok(String::from_utf8_lossy(bytes).into_owned())
+fn parse_string<R: Read>(reader: &mut R) -> Result<String> {
+    let len = reader
+        .read_u64::<LittleEndian>()
+        .map_err(|_| GGUFError::IncompleteData("Failed to read string length".into()))?;
+
+    let mut bytes = vec![0u8; len as usize];
+    reader
+        .read_exact(&mut bytes)
+        .map_err(|_| GGUFError::IncompleteData("Failed to read string data".into()))?;
+
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
 /// Parse a metadata value
-fn parse_metadata_value<'s>(
-    input: &mut &'s [u8],
-) -> std::result::Result<MetadataValue, winnow::error::ErrMode<ContextError>> {
-    let value_type = le_u32.parse_next(input)?;
+fn parse_metadata_value<R: Read>(reader: &mut R) -> Result<MetadataValue> {
+    let value_type = reader
+        .read_u32::<LittleEndian>()
+        .map_err(|_| GGUFError::IncompleteData("Failed to read metadata type".into()))?;
 
     let value_type = MetadataValueType::from_u32(value_type)
-        .ok_or_else(|| winnow::error::ErrMode::Backtrack(ContextError::new()))?;
+        .ok_or(GGUFError::InvalidMetadataType(value_type))?;
 
     match value_type {
-        MetadataValueType::UInt8 => Ok(MetadataValue::UInt8(le_u8.parse_next(input)?)),
-        MetadataValueType::Int8 => Ok(MetadataValue::Int8(le_u8.parse_next(input)? as i8)),
-        MetadataValueType::UInt16 => Ok(MetadataValue::UInt16(le_u16.parse_next(input)?)),
-        MetadataValueType::Int16 => Ok(MetadataValue::Int16(le_u16.parse_next(input)? as i16)),
-        MetadataValueType::UInt32 => Ok(MetadataValue::UInt32(le_u32.parse_next(input)?)),
-        MetadataValueType::Int32 => Ok(MetadataValue::Int32(le_u32.parse_next(input)? as i32)),
-        MetadataValueType::Float32 => Ok(MetadataValue::Float32(le_f32.parse_next(input)?)),
-        MetadataValueType::Bool => Ok(MetadataValue::Bool(le_u8.parse_next(input)? != 0)),
-        MetadataValueType::String => Ok(MetadataValue::String(parse_string(input)?)),
+        MetadataValueType::UInt8 => {
+            Ok(MetadataValue::UInt8(reader.read_u8().map_err(|_| {
+                GGUFError::IncompleteData("Failed to read UInt8".into())
+            })?))
+        }
+        MetadataValueType::Int8 => {
+            Ok(MetadataValue::Int8(reader.read_i8().map_err(|_| {
+                GGUFError::IncompleteData("Failed to read Int8".into())
+            })?))
+        }
+        MetadataValueType::UInt16 => Ok(MetadataValue::UInt16(
+            reader
+                .read_u16::<LittleEndian>()
+                .map_err(|_| GGUFError::IncompleteData("Failed to read UInt16".into()))?,
+        )),
+        MetadataValueType::Int16 => Ok(MetadataValue::Int16(
+            reader
+                .read_i16::<LittleEndian>()
+                .map_err(|_| GGUFError::IncompleteData("Failed to read Int16".into()))?,
+        )),
+        MetadataValueType::UInt32 => Ok(MetadataValue::UInt32(
+            reader
+                .read_u32::<LittleEndian>()
+                .map_err(|_| GGUFError::IncompleteData("Failed to read UInt32".into()))?,
+        )),
+        MetadataValueType::Int32 => Ok(MetadataValue::Int32(
+            reader
+                .read_i32::<LittleEndian>()
+                .map_err(|_| GGUFError::IncompleteData("Failed to read Int32".into()))?,
+        )),
+        MetadataValueType::Float32 => Ok(MetadataValue::Float32(
+            reader
+                .read_f32::<LittleEndian>()
+                .map_err(|_| GGUFError::IncompleteData("Failed to read Float32".into()))?,
+        )),
+        MetadataValueType::Bool => Ok(MetadataValue::Bool(
+            reader
+                .read_u8()
+                .map_err(|_| GGUFError::IncompleteData("Failed to read Bool".into()))?
+                != 0,
+        )),
+        MetadataValueType::String => Ok(MetadataValue::String(parse_string(reader)?)),
         MetadataValueType::Array => {
             // Array: type + count + elements
-            let elem_type = le_u32.parse_next(input)?;
-            let count = le_u64.parse_next(input)?;
+            let elem_type = reader.read_u32::<LittleEndian>().map_err(|_| {
+                GGUFError::IncompleteData("Failed to read array element type".into())
+            })?;
+            let count = reader
+                .read_u64::<LittleEndian>()
+                .map_err(|_| GGUFError::IncompleteData("Failed to read array count".into()))?;
 
             let elem_type_enum = MetadataValueType::from_u32(elem_type)
-                .ok_or_else(|| winnow::error::ErrMode::Backtrack(ContextError::new()))?;
+                .ok_or(GGUFError::InvalidMetadataType(elem_type))?;
 
             let mut array = Vec::with_capacity(count.min(1024) as usize);
             for _ in 0..count {
-                array.push(parse_array_element(input, elem_type_enum)?);
+                array.push(parse_array_element(reader, elem_type_enum)?);
             }
 
             Ok(MetadataValue::Array(array))
         }
-        MetadataValueType::UInt64 => Ok(MetadataValue::UInt64(le_u64.parse_next(input)?)),
-        MetadataValueType::Int64 => Ok(MetadataValue::Int64(le_u64.parse_next(input)? as i64)),
-        MetadataValueType::Float64 => Ok(MetadataValue::Float64(le_f64.parse_next(input)?)),
+        MetadataValueType::UInt64 => Ok(MetadataValue::UInt64(
+            reader
+                .read_u64::<LittleEndian>()
+                .map_err(|_| GGUFError::IncompleteData("Failed to read UInt64".into()))?,
+        )),
+        MetadataValueType::Int64 => Ok(MetadataValue::Int64(
+            reader
+                .read_i64::<LittleEndian>()
+                .map_err(|_| GGUFError::IncompleteData("Failed to read Int64".into()))?,
+        )),
+        MetadataValueType::Float64 => Ok(MetadataValue::Float64(
+            reader
+                .read_f64::<LittleEndian>()
+                .map_err(|_| GGUFError::IncompleteData("Failed to read Float64".into()))?,
+        )),
     }
 }
 
 /// Parse array element (without type prefix)
-fn parse_array_element<'s>(
-    input: &mut &'s [u8],
+fn parse_array_element<R: Read>(
+    reader: &mut R,
     elem_type: MetadataValueType,
-) -> std::result::Result<MetadataValue, winnow::error::ErrMode<ContextError>> {
+) -> Result<MetadataValue> {
     match elem_type {
-        MetadataValueType::UInt8 => Ok(MetadataValue::UInt8(le_u8.parse_next(input)?)),
-        MetadataValueType::Int8 => Ok(MetadataValue::Int8(le_u8.parse_next(input)? as i8)),
-        MetadataValueType::UInt16 => Ok(MetadataValue::UInt16(le_u16.parse_next(input)?)),
-        MetadataValueType::Int16 => Ok(MetadataValue::Int16(le_u16.parse_next(input)? as i16)),
-        MetadataValueType::UInt32 => Ok(MetadataValue::UInt32(le_u32.parse_next(input)?)),
-        MetadataValueType::Int32 => Ok(MetadataValue::Int32(le_u32.parse_next(input)? as i32)),
-        MetadataValueType::Float32 => Ok(MetadataValue::Float32(le_f32.parse_next(input)?)),
-        MetadataValueType::Bool => Ok(MetadataValue::Bool(le_u8.parse_next(input)? != 0)),
-        MetadataValueType::String => Ok(MetadataValue::String(parse_string(input)?)),
-        MetadataValueType::UInt64 => Ok(MetadataValue::UInt64(le_u64.parse_next(input)?)),
-        MetadataValueType::Int64 => Ok(MetadataValue::Int64(le_u64.parse_next(input)? as i64)),
-        MetadataValueType::Float64 => Ok(MetadataValue::Float64(le_f64.parse_next(input)?)),
-        MetadataValueType::Array => Err(winnow::error::ErrMode::Backtrack(ContextError::new())),
+        MetadataValueType::UInt8 => {
+            Ok(MetadataValue::UInt8(reader.read_u8().map_err(|_| {
+                GGUFError::IncompleteData("Failed to read array UInt8".into())
+            })?))
+        }
+        MetadataValueType::Int8 => {
+            Ok(MetadataValue::Int8(reader.read_i8().map_err(|_| {
+                GGUFError::IncompleteData("Failed to read array Int8".into())
+            })?))
+        }
+        MetadataValueType::UInt16 => Ok(MetadataValue::UInt16(
+            reader
+                .read_u16::<LittleEndian>()
+                .map_err(|_| GGUFError::IncompleteData("Failed to read array UInt16".into()))?,
+        )),
+        MetadataValueType::Int16 => Ok(MetadataValue::Int16(
+            reader
+                .read_i16::<LittleEndian>()
+                .map_err(|_| GGUFError::IncompleteData("Failed to read array Int16".into()))?,
+        )),
+        MetadataValueType::UInt32 => Ok(MetadataValue::UInt32(
+            reader
+                .read_u32::<LittleEndian>()
+                .map_err(|_| GGUFError::IncompleteData("Failed to read array UInt32".into()))?,
+        )),
+        MetadataValueType::Int32 => Ok(MetadataValue::Int32(
+            reader
+                .read_i32::<LittleEndian>()
+                .map_err(|_| GGUFError::IncompleteData("Failed to read array Int32".into()))?,
+        )),
+        MetadataValueType::Float32 => Ok(MetadataValue::Float32(
+            reader
+                .read_f32::<LittleEndian>()
+                .map_err(|_| GGUFError::IncompleteData("Failed to read array Float32".into()))?,
+        )),
+        MetadataValueType::Bool => Ok(MetadataValue::Bool(
+            reader
+                .read_u8()
+                .map_err(|_| GGUFError::IncompleteData("Failed to read array Bool".into()))?
+                != 0,
+        )),
+        MetadataValueType::String => Ok(MetadataValue::String(parse_string(reader)?)),
+        MetadataValueType::UInt64 => Ok(MetadataValue::UInt64(
+            reader
+                .read_u64::<LittleEndian>()
+                .map_err(|_| GGUFError::IncompleteData("Failed to read array UInt64".into()))?,
+        )),
+        MetadataValueType::Int64 => Ok(MetadataValue::Int64(
+            reader
+                .read_i64::<LittleEndian>()
+                .map_err(|_| GGUFError::IncompleteData("Failed to read array Int64".into()))?,
+        )),
+        MetadataValueType::Float64 => Ok(MetadataValue::Float64(
+            reader
+                .read_f64::<LittleEndian>()
+                .map_err(|_| GGUFError::IncompleteData("Failed to read array Float64".into()))?,
+        )),
+        MetadataValueType::Array => {
+            Err(GGUFError::ParseError("Nested arrays not supported".into()))
+        }
     }
 }
 
 /// Parse metadata key-value pairs
-fn parse_metadata_kvs<'s>(
-    input: &mut &'s [u8],
+fn parse_metadata_kvs<R: Read>(
+    reader: &mut R,
     count: usize,
-) -> std::result::Result<HashMap<String, MetadataValue>, winnow::error::ErrMode<ContextError>> {
+) -> Result<HashMap<String, MetadataValue>> {
     let mut metadata = HashMap::with_capacity(count);
 
     for _ in 0..count {
-        let key = parse_string(input)?;
-        let value = parse_metadata_value(input)?;
+        let key = parse_string(reader)?;
+        let value = parse_metadata_value(reader)?;
         metadata.insert(key, value);
     }
 
@@ -235,27 +312,32 @@ fn parse_metadata_kvs<'s>(
 }
 
 /// Parse tensor information entries
-fn parse_tensor_infos<'s>(
-    input: &mut &'s [u8],
-    count: usize,
-) -> std::result::Result<Vec<TensorInfo>, winnow::error::ErrMode<ContextError>> {
+fn parse_tensor_infos<R: Read>(reader: &mut R, count: usize) -> Result<Vec<TensorInfo>> {
     let mut tensors = Vec::with_capacity(count);
 
     for _ in 0..count {
-        let name = parse_string(input)?;
-        let n_dimensions = le_u32.parse_next(input)?;
+        let name = parse_string(reader)?;
+        let n_dimensions = reader.read_u32::<LittleEndian>().map_err(|_| {
+            GGUFError::IncompleteData("Failed to read tensor dimension count".into())
+        })?;
 
         // Parse dimensions
         let mut dimensions = Vec::with_capacity(n_dimensions as usize);
         for _ in 0..n_dimensions {
-            dimensions.push(le_u64.parse_next(input)?);
+            dimensions.push(reader.read_u64::<LittleEndian>().map_err(|_| {
+                GGUFError::IncompleteData("Failed to read tensor dimension".into())
+            })?);
         }
 
-        let ggml_type_raw = le_u32.parse_next(input)?;
-        let offset = le_u64.parse_next(input)?;
+        let ggml_type_raw = reader
+            .read_u32::<LittleEndian>()
+            .map_err(|_| GGUFError::IncompleteData("Failed to read tensor type".into()))?;
+        let offset = reader
+            .read_u64::<LittleEndian>()
+            .map_err(|_| GGUFError::IncompleteData("Failed to read tensor offset".into()))?;
 
-        let ggml_type = GGMLType::from_u32(ggml_type_raw)
-            .ok_or_else(|| winnow::error::ErrMode::Backtrack(ContextError::new()))?;
+        let ggml_type =
+            GGMLType::from_u32(ggml_type_raw).ok_or(GGUFError::InvalidTensorType(ggml_type_raw))?;
 
         tensors.push(TensorInfo {
             name,
@@ -284,12 +366,108 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_magic() {
-        let data = b"GGUF\x02\x00\x00\x00";
-        let mut input = &data[..];
-        let magic = parse_magic(&mut input).unwrap();
+    fn test_parse_magic_and_version() {
+        // Create a minimal GGUF header: magic + version
+        let mut data = Vec::new();
+        data.extend_from_slice(&GGUF_MAGIC); // Magic: "GGUF"
+        data.extend_from_slice(&2u32.to_le_bytes()); // Version: 2
+        data.extend_from_slice(&0u64.to_le_bytes()); // Tensor count: 0
+        data.extend_from_slice(&0u64.to_le_bytes()); // Metadata KV count: 0
+
+        let mut reader = Cursor::new(&data);
+
+        // Verify magic
+        let mut magic = [0u8; 4];
+        reader.read_exact(&mut magic).unwrap();
         assert_eq!(magic, GGUF_MAGIC);
-        assert_eq!(input.len(), 4);
+
+        // Verify version
+        let version = reader.read_u32::<LittleEndian>().unwrap();
+        assert_eq!(version, 2);
+    }
+
+    #[test]
+    fn test_parse_minimal_gguf_header() {
+        // Create a minimal valid GGUF file
+        let mut data = Vec::new();
+        data.extend_from_slice(&GGUF_MAGIC); // Magic: "GGUF"
+        data.extend_from_slice(&2u32.to_le_bytes()); // Version: 2
+        data.extend_from_slice(&0u64.to_le_bytes()); // Tensor count: 0
+        data.extend_from_slice(&0u64.to_le_bytes()); // Metadata KV count: 0
+
+        let result = GGUFFile::parse_header(&data);
+        assert!(result.is_ok());
+
+        let (metadata, _offset) = result.unwrap();
+        assert_eq!(metadata.header.version, 2);
+        assert_eq!(metadata.header.tensor_count, 0);
+        assert_eq!(metadata.header.metadata_kv_count, 0);
+    }
+
+    #[test]
+    fn test_parse_string() {
+        let mut data = Vec::new();
+        let test_str = "test_string";
+        data.extend_from_slice(&(test_str.len() as u64).to_le_bytes());
+        data.extend_from_slice(test_str.as_bytes());
+
+        let mut reader = Cursor::new(&data);
+        let result = parse_string(&mut reader).unwrap();
+        assert_eq!(result, test_str);
+    }
+
+    #[test]
+    fn test_parse_metadata_uint32() {
+        let mut data = Vec::new();
+        data.extend_from_slice(&4u32.to_le_bytes()); // Type: UInt32
+        data.extend_from_slice(&42u32.to_le_bytes()); // Value: 42
+
+        let mut reader = Cursor::new(&data);
+        let result = parse_metadata_value(&mut reader).unwrap();
+
+        match result {
+            MetadataValue::UInt32(val) => assert_eq!(val, 42),
+            _ => panic!("Expected UInt32 metadata value"),
+        }
+    }
+
+    #[test]
+    fn test_parse_metadata_string() {
+        let mut data = Vec::new();
+        data.extend_from_slice(&8u32.to_le_bytes()); // Type: String
+        let test_str = "hello";
+        data.extend_from_slice(&(test_str.len() as u64).to_le_bytes());
+        data.extend_from_slice(test_str.as_bytes());
+
+        let mut reader = Cursor::new(&data);
+        let result = parse_metadata_value(&mut reader).unwrap();
+
+        match result {
+            MetadataValue::String(val) => assert_eq!(val, test_str),
+            _ => panic!("Expected String metadata value"),
+        }
+    }
+
+    #[test]
+    fn test_invalid_magic() {
+        let mut data = Vec::new();
+        data.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]); // Invalid magic
+        data.extend_from_slice(&2u32.to_le_bytes()); // Version: 2
+
+        let result = GGUFFile::parse_header(&data);
+        assert!(matches!(result, Err(GGUFError::InvalidMagic(_))));
+    }
+
+    #[test]
+    fn test_unsupported_version() {
+        let mut data = Vec::new();
+        data.extend_from_slice(&GGUF_MAGIC); // Magic: "GGUF"
+        data.extend_from_slice(&1u32.to_le_bytes()); // Version: 1 (unsupported)
+        data.extend_from_slice(&0u64.to_le_bytes()); // Tensor count: 0
+        data.extend_from_slice(&0u64.to_le_bytes()); // Metadata KV count: 0
+
+        let result = GGUFFile::parse_header(&data);
+        assert!(matches!(result, Err(GGUFError::UnsupportedVersion(1))));
     }
 
     #[test]
@@ -298,5 +476,34 @@ mod tests {
         assert_eq!(align_offset(1, 32), 32);
         assert_eq!(align_offset(32, 32), 32);
         assert_eq!(align_offset(33, 32), 64);
+        assert_eq!(align_offset(100, 32), 128);
+    }
+
+    #[test]
+    fn test_parse_header_with_metadata() {
+        let mut data = Vec::new();
+        data.extend_from_slice(&GGUF_MAGIC); // Magic: "GGUF"
+        data.extend_from_slice(&2u32.to_le_bytes()); // Version: 2
+        data.extend_from_slice(&0u64.to_le_bytes()); // Tensor count: 0
+        data.extend_from_slice(&1u64.to_le_bytes()); // Metadata KV count: 1
+
+        // Add one metadata entry: key = "test.key", value = UInt32(123)
+        let key = "test.key";
+        data.extend_from_slice(&(key.len() as u64).to_le_bytes());
+        data.extend_from_slice(key.as_bytes());
+        data.extend_from_slice(&4u32.to_le_bytes()); // Type: UInt32
+        data.extend_from_slice(&123u32.to_le_bytes()); // Value: 123
+
+        let result = GGUFFile::parse_header(&data);
+        assert!(result.is_ok());
+
+        let (metadata, _offset) = result.unwrap();
+        assert_eq!(metadata.header.metadata_kv_count, 1);
+        assert!(metadata.metadata.contains_key("test.key"));
+
+        match metadata.metadata.get("test.key").unwrap() {
+            MetadataValue::UInt32(val) => assert_eq!(*val, 123),
+            _ => panic!("Expected UInt32 metadata value"),
+        }
     }
 }

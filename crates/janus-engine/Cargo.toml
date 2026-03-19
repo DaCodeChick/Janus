@@ -7,7 +7,7 @@ authors.workspace = true
 
 [dependencies]
 # GGUF parsing
-winnow.workspace = true
+byteorder.workspace = true
 memmap2.workspace = true
 
 # GPU compute
