@@ -1,5 +1,7 @@
 use std::collections::HashMap;
 
+use super::error::GGUFError;
+
 /// GGML tensor data types (quantization formats)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u32)]
@@ -35,42 +37,45 @@ pub enum GGMLType {
     IQ1_M = 29,
 }
 
-impl GGMLType {
-    /// Parse from u32
-    pub fn from_u32(value: u32) -> Option<Self> {
+impl TryFrom<u32> for GGMLType {
+    type Error = GGUFError;
+
+    fn try_from(value: u32) -> Result<Self, Self::Error> {
         match value {
-            0 => Some(Self::F32),
-            1 => Some(Self::F16),
-            2 => Some(Self::Q4_0),
-            3 => Some(Self::Q4_1),
-            6 => Some(Self::Q5_0),
-            7 => Some(Self::Q5_1),
-            8 => Some(Self::Q8_0),
-            9 => Some(Self::Q8_1),
-            10 => Some(Self::Q2_K),
-            11 => Some(Self::Q3_K),
-            12 => Some(Self::Q4_K),
-            13 => Some(Self::Q5_K),
-            14 => Some(Self::Q6_K),
-            15 => Some(Self::Q8_K),
-            16 => Some(Self::I8),
-            17 => Some(Self::I16),
-            18 => Some(Self::I32),
-            19 => Some(Self::I64),
-            20 => Some(Self::F64),
-            21 => Some(Self::IQ2_XXS),
-            22 => Some(Self::IQ2_XS),
-            23 => Some(Self::IQ3_XXS),
-            24 => Some(Self::IQ1_S),
-            25 => Some(Self::IQ4_NL),
-            26 => Some(Self::IQ3_S),
-            27 => Some(Self::IQ2_S),
-            28 => Some(Self::IQ4_XS),
-            29 => Some(Self::IQ1_M),
-            _ => None,
+            0 => Ok(Self::F32),
+            1 => Ok(Self::F16),
+            2 => Ok(Self::Q4_0),
+            3 => Ok(Self::Q4_1),
+            6 => Ok(Self::Q5_0),
+            7 => Ok(Self::Q5_1),
+            8 => Ok(Self::Q8_0),
+            9 => Ok(Self::Q8_1),
+            10 => Ok(Self::Q2_K),
+            11 => Ok(Self::Q3_K),
+            12 => Ok(Self::Q4_K),
+            13 => Ok(Self::Q5_K),
+            14 => Ok(Self::Q6_K),
+            15 => Ok(Self::Q8_K),
+            16 => Ok(Self::I8),
+            17 => Ok(Self::I16),
+            18 => Ok(Self::I32),
+            19 => Ok(Self::I64),
+            20 => Ok(Self::F64),
+            21 => Ok(Self::IQ2_XXS),
+            22 => Ok(Self::IQ2_XS),
+            23 => Ok(Self::IQ3_XXS),
+            24 => Ok(Self::IQ1_S),
+            25 => Ok(Self::IQ4_NL),
+            26 => Ok(Self::IQ3_S),
+            27 => Ok(Self::IQ2_S),
+            28 => Ok(Self::IQ4_XS),
+            29 => Ok(Self::IQ1_M),
+            _ => Err(GGUFError::InvalidTensorType(value)),
         }
     }
+}
 
+impl GGMLType {
     /// Get the size in bytes for a single element of this type
     pub fn element_size(&self) -> usize {
         match self {
@@ -201,23 +206,25 @@ pub enum MetadataValueType {
     Float64 = 12,
 }
 
-impl MetadataValueType {
-    pub fn from_u32(value: u32) -> Option<Self> {
+impl TryFrom<u32> for MetadataValueType {
+    type Error = GGUFError;
+
+    fn try_from(value: u32) -> Result<Self, Self::Error> {
         match value {
-            0 => Some(Self::UInt8),
-            1 => Some(Self::Int8),
-            2 => Some(Self::UInt16),
-            3 => Some(Self::Int16),
-            4 => Some(Self::UInt32),
-            5 => Some(Self::Int32),
-            6 => Some(Self::Float32),
-            7 => Some(Self::Bool),
-            8 => Some(Self::String),
-            9 => Some(Self::Array),
-            10 => Some(Self::UInt64),
-            11 => Some(Self::Int64),
-            12 => Some(Self::Float64),
-            _ => None,
+            0 => Ok(Self::UInt8),
+            1 => Ok(Self::Int8),
+            2 => Ok(Self::UInt16),
+            3 => Ok(Self::Int16),
+            4 => Ok(Self::UInt32),
+            5 => Ok(Self::Int32),
+            6 => Ok(Self::Float32),
+            7 => Ok(Self::Bool),
+            8 => Ok(Self::String),
+            9 => Ok(Self::Array),
+            10 => Ok(Self::UInt64),
+            11 => Ok(Self::Int64),
+            12 => Ok(Self::Float64),
+            _ => Err(GGUFError::InvalidMetadataType(value)),
         }
     }
 }

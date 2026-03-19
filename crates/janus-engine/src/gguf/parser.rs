@@ -143,8 +143,7 @@ fn parse_metadata_value<R: Read>(reader: &mut R) -> Result<MetadataValue> {
         .read_u32::<LittleEndian>()
         .map_err(|_| GGUFError::IncompleteData("Failed to read metadata type".into()))?;
 
-    let value_type = MetadataValueType::from_u32(value_type)
-        .ok_or(GGUFError::InvalidMetadataType(value_type))?;
+    let value_type = MetadataValueType::try_from(value_type)?;
 
     match value_type {
         MetadataValueType::UInt8 => {
@@ -198,8 +197,7 @@ fn parse_metadata_value<R: Read>(reader: &mut R) -> Result<MetadataValue> {
                 .read_u64::<LittleEndian>()
                 .map_err(|_| GGUFError::IncompleteData("Failed to read array count".into()))?;
 
-            let elem_type_enum = MetadataValueType::from_u32(elem_type)
-                .ok_or(GGUFError::InvalidMetadataType(elem_type))?;
+            let elem_type_enum = MetadataValueType::try_from(elem_type)?;
 
             let mut array = Vec::with_capacity(count.min(1024) as usize);
             for _ in 0..count {
@@ -336,8 +334,7 @@ fn parse_tensor_infos<R: Read>(reader: &mut R, count: usize) -> Result<Vec<Tenso
             .read_u64::<LittleEndian>()
             .map_err(|_| GGUFError::IncompleteData("Failed to read tensor offset".into()))?;
 
-        let ggml_type =
-            GGMLType::from_u32(ggml_type_raw).ok_or(GGUFError::InvalidTensorType(ggml_type_raw))?;
+        let ggml_type = GGMLType::try_from(ggml_type_raw)?;
 
         tensors.push(TensorInfo {
             name,

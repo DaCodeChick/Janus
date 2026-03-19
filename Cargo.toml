@@ -52,7 +52,6 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 
 # Binary parsing for GGUF
 memmap2 = "0.9.10"
-winnow = "0.6"
 byteorder = "1.5.0"
 
 # Numerics
