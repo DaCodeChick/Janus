@@ -21,6 +21,7 @@ janus-api = { path = "../janus-api" }
 
 # Async runtime
 tokio.workspace = true
+futures = "0.3"
 
 # Error handling
 thiserror.workspace = true
@@ -31,6 +32,9 @@ tracing.workspace = true
 
 # Numerics
 half.workspace = true
+
+# Tokenization
+tokenizers = "0.20"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full", "test-util"] }
