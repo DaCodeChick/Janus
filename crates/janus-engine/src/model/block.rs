@@ -57,10 +57,8 @@ pub struct TransformerBlock {
 
     // Normalization weights
     /// Attention input normalization weight [hidden_dim]
-    #[allow(dead_code)] // TODO: RMSNorm weights will be used in future optimization
     attn_norm_weight: wgpu::Buffer,
     /// FFN input normalization weight [hidden_dim]
-    #[allow(dead_code)] // TODO: RMSNorm weights will be used in future optimization
     ffn_norm_weight: wgpu::Buffer,
 }
 
@@ -141,6 +139,7 @@ impl TransformerBlock {
         let input_norm = rmsnorm(
             engine,
             input,
+            &self.attn_norm_weight,
             self.config.hidden_dim,
             self.config.rms_norm_eps,
         )
@@ -242,6 +241,7 @@ impl TransformerBlock {
         let ffn_norm = rmsnorm(
             engine,
             &hidden_1,
+            &self.ffn_norm_weight,
             self.config.hidden_dim,
             self.config.rms_norm_eps,
         )

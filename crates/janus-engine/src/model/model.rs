@@ -116,7 +116,6 @@ pub struct Model {
     blocks: Vec<TransformerBlock>,
 
     /// Final RMSNorm weight [hidden_dim]
-    #[allow(dead_code)] // TODO: RMSNorm weights will be used in future optimization
     output_norm_weight: Buffer,
 
     /// LM head weight [hidden_dim, vocab_size]
@@ -389,6 +388,7 @@ impl Model {
         let normalized = rmsnorm(
             &self.engine,
             &hidden,
+            &self.output_norm_weight,
             self.config.hidden_dim,
             self.config.rms_norm_eps,
         )

@@ -183,13 +183,14 @@ struct RmsNormUniforms {
     _pad1: u32,
 }
 
-/// Apply Root Mean Square Normalization (RMSNorm)
+/// Apply Root Mean Square Normalization (RMSNorm) with learned gamma weights
 ///
-/// Formula: output[i] = input[i] / sqrt(mean(input^2) + epsilon)
+/// Formula: output[i] = (input[i] / sqrt(mean(input^2) + epsilon)) * gamma[i]
 ///
 /// # Arguments
 /// * `engine` - The compute engine containing GPU device and queue
 /// * `input` - GPU buffer containing input values (f32 array)
+/// * `weights` - GPU buffer containing gamma weights (f32 array, same size as input)
 /// * `size` - Number of elements in the input
 /// * `epsilon` - Small constant for numerical stability (typically 1e-6)
 ///
@@ -201,6 +202,7 @@ struct RmsNormUniforms {
 pub async fn rmsnorm(
     engine: &ComputeEngine,
     input: &wgpu::Buffer,
+    weights: &wgpu::Buffer,
     size: u32,
     epsilon: f32,
 ) -> Result<wgpu::Buffer> {
@@ -262,9 +264,20 @@ pub async fn rmsnorm(
                 },
                 count: None,
             },
-            // Uniforms
+            // Gamma weights (storage, read-only)
             wgpu::BindGroupLayoutEntry {
                 binding: 2,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            // Uniforms
+            wgpu::BindGroupLayoutEntry {
+                binding: 3,
                 visibility: wgpu::ShaderStages::COMPUTE,
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Uniform,
@@ -291,6 +304,10 @@ pub async fn rmsnorm(
             },
             wgpu::BindGroupEntry {
                 binding: 2,
+                resource: weights.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 3,
                 resource: uniforms_buffer.as_entire_binding(),
             },
         ],

@@ -396,17 +396,18 @@ async fn test_rmsnorm() {
 
     // Test input
     let input: Vec<f32> = vec![1.0, 2.0, 3.0, 4.0];
+    let gamma: Vec<f32> = vec![1.0, 1.0, 1.0, 1.0]; // Identity gamma for simple test
     let epsilon = 1e-6;
 
     // Calculate expected output manually:
     // sum_of_squares = 1^2 + 2^2 + 3^2 + 4^2 = 1 + 4 + 9 + 16 = 30
     // mean_square = 30 / 4 = 7.5
     // rms = sqrt(7.5 + 1e-6) ≈ 2.7386127875258306
-    // output[i] = input[i] / rms
+    // output[i] = (input[i] / rms) * gamma[i]
     let sum_sq = 1.0_f32 + 4.0 + 9.0 + 16.0; // 30.0
     let mean_sq = sum_sq / 4.0; // 7.5
     let rms = (mean_sq + epsilon).sqrt(); // ~2.7386127875258306
-    let expected: Vec<f32> = input.iter().map(|&x| x / rms).collect();
+    let expected: Vec<f32> = input.iter().zip(gamma.iter()).map(|(&x, &g)| (x / rms) * g).collect();
 
     // Upload to GPU
     let input_buffer = engine.device().create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -415,8 +416,14 @@ async fn test_rmsnorm() {
         usage: wgpu::BufferUsages::STORAGE,
     });
 
+    let gamma_buffer = engine.device().create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("test_rmsnorm_gamma"),
+        contents: bytemuck::cast_slice(&gamma),
+        usage: wgpu::BufferUsages::STORAGE,
+    });
+
     // Run RMSNorm
-    let output = rmsnorm(&engine, &input_buffer, input.len() as u32, epsilon)
+    let output = rmsnorm(&engine, &input_buffer, &gamma_buffer, input.len() as u32, epsilon)
         .await
         .expect("rmsnorm failed");
 
@@ -437,6 +444,7 @@ async fn test_rmsnorm() {
 
     println!("✓ RMSNorm test passed!");
     println!("  Input:    {:?}", input);
+    println!("  Gamma:    {:?}", gamma);
     println!("  Output:   {:?}", result);
     println!("  Expected: {:?}", expected);
     println!("  RMS value: {}", rms);
@@ -455,13 +463,14 @@ async fn test_rmsnorm_larger() {
 
     // Test with a larger array to verify parallel reduction
     let input: Vec<f32> = (1..=512).map(|x| x as f32).collect();
+    let gamma: Vec<f32> = vec![1.0; 512]; // Identity gamma
     let epsilon = 1e-6;
 
     // Calculate expected output
     let sum_sq: f32 = input.iter().map(|&x| x * x).sum();
     let mean_sq = sum_sq / input.len() as f32;
     let rms = (mean_sq + epsilon).sqrt();
-    let expected: Vec<f32> = input.iter().map(|&x| x / rms).collect();
+    let expected: Vec<f32> = input.iter().zip(gamma.iter()).map(|(&x, &g)| (x / rms) * g).collect();
 
     // Upload to GPU
     let input_buffer = engine.device().create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -470,8 +479,14 @@ async fn test_rmsnorm_larger() {
         usage: wgpu::BufferUsages::STORAGE,
     });
 
+    let gamma_buffer = engine.device().create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("test_rmsnorm_large_gamma"),
+        contents: bytemuck::cast_slice(&gamma),
+        usage: wgpu::BufferUsages::STORAGE,
+    });
+
     // Run RMSNorm
-    let output = rmsnorm(&engine, &input_buffer, input.len() as u32, epsilon)
+    let output = rmsnorm(&engine, &input_buffer, &gamma_buffer, input.len() as u32, epsilon)
         .await
         .expect("rmsnorm failed");
 

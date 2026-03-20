@@ -27,7 +27,6 @@ pub struct LMHeadConfig {
 pub struct LMHead {
     config: LMHeadConfig,
     /// Output normalization weight [hidden_dim]
-    #[allow(dead_code)] // TODO: RMSNorm weights will be used in future optimization
     output_norm_weight: wgpu::Buffer,
     /// Output projection weight [hidden_dim × vocab_size]
     output_weight: wgpu::Buffer,
@@ -78,6 +77,7 @@ impl LMHead {
         let normalized = rmsnorm(
             engine,
             hidden_state,
+            &self.output_norm_weight,
             self.config.hidden_dim,
             self.config.rms_norm_eps,
         )

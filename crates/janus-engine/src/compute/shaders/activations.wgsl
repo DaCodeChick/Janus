@@ -37,11 +37,11 @@ fn silu(@builtin(global_invocation_id) global_id: vec3<u32>) {
 // ============================================================================
 // RMSNorm (Root Mean Square Normalization)
 // ============================================================================
-// Formula: output[i] = input[i] / sqrt(mean(input^2) + epsilon)
+// Formula: output[i] = (input[i] / sqrt(mean(input^2) + epsilon)) * gamma[i]
 //
 // This requires two passes:
 // 1. Compute sum of squares (with reduction)
-// 2. Normalize each element
+// 2. Normalize each element and apply gamma weights
 
 struct RmsNormUniforms {
     size: u32,      // Number of elements
@@ -52,7 +52,8 @@ struct RmsNormUniforms {
 
 @group(0) @binding(0) var<storage, read> rms_input: array<f32>;
 @group(0) @binding(1) var<storage, read_write> rms_output: array<f32>;
-@group(0) @binding(2) var<uniform> rms_uniforms: RmsNormUniforms;
+@group(0) @binding(2) var<storage, read> gamma: array<f32>;
+@group(0) @binding(3) var<uniform> rms_uniforms: RmsNormUniforms;
 
 // Shared memory for parallel reduction
 var<workgroup> shared_sum: array<f32, 256>;
@@ -102,11 +103,12 @@ fn rmsnorm(
     }
     workgroupBarrier();
     
-    // Phase 2: Normalize each element
+    // Phase 2: Normalize each element and apply gamma weights
     rms = shared_sum[0];
     idx = global_id.x;
     while (idx < size) {
-        rms_output[idx] = rms_input[idx] / rms;
+        let normalized = rms_input[idx] / rms;
+        rms_output[idx] = normalized * gamma[idx];
         idx = idx + 256u;
     }
 }
