@@ -278,22 +278,22 @@ impl KVCache {
     }
     
     /// Get the maximum sequence length supported by this cache
-    pub fn max_seq_len(&self) -> u32 {
+    pub const fn max_seq_len(&self) -> u32 {
         self.max_seq_len
     }
     
     /// Get the number of attention heads
-    pub fn num_heads(&self) -> u32 {
+    pub const fn num_heads(&self) -> u32 {
         self.num_heads
     }
     
     /// Get the dimension of each attention head
-    pub fn head_dim(&self) -> u32 {
+    pub const fn head_dim(&self) -> u32 {
         self.head_dim
     }
     
     /// Get the current position in the cache
-    pub fn current_position(&self) -> u32 {
+    pub const fn current_position(&self) -> u32 {
         self.current_position
     }
     
