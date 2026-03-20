@@ -292,6 +292,11 @@ impl KVCache {
         &self.value_cache
     }
     
+    /// Get the number of transformer layers
+    pub const fn num_layers(&self) -> u32 {
+        self.num_layers
+    }
+    
     /// Get the maximum sequence length supported by this cache
     pub const fn max_seq_len(&self) -> u32 {
         self.max_seq_len

@@ -1,3 +1,6 @@
+// Allow non_local_definitions for abi_stable macro-generated code
+#![allow(non_local_definitions)]
+
 use crate::callback::*;
 use crate::types::*;
 use abi_stable::{
