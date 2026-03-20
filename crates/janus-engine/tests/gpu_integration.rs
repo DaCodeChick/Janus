@@ -1,7 +1,8 @@
 //! Integration test for ComputeEngine and GGUF tensor allocation
 
 use janus_engine::compute::ComputeEngine;
-use janus_engine::gguf::{GGMLType, GGUFFile};
+use janus_engine::formats::gguf::{GGMLType, GGUFFile};
+use janus_engine::formats::ModelLoader;
 use std::fs::File;
 use std::io::Write;
 use tempfile::TempDir;
@@ -74,12 +75,13 @@ async fn test_allocate_tensors_to_gpu() {
     let gguf_path = create_test_gguf_file(&temp_dir);
 
     // Parse the GGUF file
-    let gguf = GGUFFile::open(&gguf_path).expect("Failed to open GGUF file");
+    let gguf = GGUFFile::from_file(&gguf_path).expect("Failed to open GGUF file");
 
     // Verify we have 2 tensors
-    assert_eq!(gguf.tensors().len(), 2);
-    assert_eq!(gguf.tensors()[0].name, "tensor_a");
-    assert_eq!(gguf.tensors()[1].name, "tensor_b");
+    let tensors = gguf.tensors().expect("Failed to get tensors");
+    assert_eq!(tensors.len(), 2);
+    assert!(tensors.contains_key("tensor_a"));
+    assert!(tensors.contains_key("tensor_b"));
 
     // Initialize the compute engine
     let engine = match ComputeEngine::new().await {
@@ -119,11 +121,12 @@ async fn test_tensor_data_reading() {
     let gguf_path = create_test_gguf_file(&temp_dir);
 
     // Parse the GGUF file
-    let gguf = GGUFFile::open(&gguf_path).expect("Failed to open GGUF file");
+    let gguf = GGUFFile::from_file(&gguf_path).expect("Failed to open GGUF file");
 
     // Test reading tensor data
-    let tensor_a = &gguf.tensors()[0];
-    let tensor_a_data = gguf.get_tensor_data(tensor_a);
+    let tensors = gguf.tensors().expect("Failed to get tensors");
+    let tensor_a = tensors.get("tensor_a").expect("tensor_a not found");
+    let tensor_a_data = tensor_a.data;
 
     // Verify size
     assert_eq!(tensor_a_data.len(), 64); // 16 F32 = 64 bytes

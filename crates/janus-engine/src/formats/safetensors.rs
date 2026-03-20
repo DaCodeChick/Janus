@@ -26,6 +26,8 @@ struct TensorInfo {
 /// Safetensors JSON header structure
 #[derive(Debug, Deserialize, Serialize)]
 struct SafetensorsHeader {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    __metadata__: Option<serde_json::Value>,
     #[serde(flatten)]
     tensors: HashMap<String, TensorInfo>,
 }
