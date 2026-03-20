@@ -83,39 +83,6 @@ impl ComputeEngine {
         &self.queue
     }
 
-    /// Convert BF16 (Brain Float 16) data to F32
-    ///
-    /// BF16 is a truncated F32 format where the bottom 16 bits are removed.
-    /// To convert: take each u16, shift left by 16 bits, interpret as f32.
-    ///
-    /// # Arguments
-    /// * `bf16_bytes` - Raw byte slice containing BF16 data (2 bytes per element)
-    ///
-    /// # Returns
-    /// Vector of F32 values
-    fn bf16_to_f32(bf16_bytes: &[u8]) -> Vec<f32> {
-        // Each BF16 value is 2 bytes (u16)
-        let num_elements = bf16_bytes.len() / 2;
-        let mut f32_values = Vec::with_capacity(num_elements);
-
-        for i in 0..num_elements {
-            // Read u16 in little-endian
-            let bf16_val = u16::from_le_bytes([
-                bf16_bytes[i * 2],
-                bf16_bytes[i * 2 + 1],
-            ]);
-
-            // Convert BF16 to F32 by shifting left 16 bits
-            // BF16 stores only the high 16 bits of an F32
-            let f32_bits = (bf16_val as u32) << 16;
-            let f32_val = f32::from_bits(f32_bits);
-
-            f32_values.push(f32_val);
-        }
-
-        f32_values
-    }
-
     /// Allocate tensors from a model file to GPU buffers
     ///
     /// Accepts any ModelLoader implementation (GGUF, Safetensors, etc.)
@@ -123,8 +90,8 @@ impl ComputeEngine {
     ///
     /// # Supported Data Types
     /// - **F32**: Direct zero-copy transfer to GPU
-    /// - **BF16**: On-the-fly upconversion to F32 for WebGPU shader compatibility
-    /// - **Other types**: Currently skipped with a warning (quantization support coming in Phase 6)
+    /// - **Q4_K**: Quantized format, dequantized on-the-fly in shader
+    /// - **Other types**: Skipped with warning (BF16, other quantization formats not yet supported)
     pub fn allocate_tensors<L: ModelLoader>(&self, loader: &L) -> Result<HashMap<String, wgpu::Buffer>> {
         let tensors = loader.tensors()
             .map_err(|e| ComputeError::Other(format!("Failed to load tensors: {}", e)))?;
@@ -135,8 +102,7 @@ impl ComputeEngine {
 
         let mut total_bytes = 0u64;
         let mut skipped_count = 0;
-        let mut bf16_converted_count = 0;
-        let mut f32_direct_count = 0;
+        let mut f32_count = 0;
         let mut q4k_count = 0;
 
         for (name, tensor) in tensors {
@@ -152,37 +118,12 @@ impl ComputeEngine {
                     });
 
                     total_bytes += size_bytes as u64;
-                    f32_direct_count += 1;
+                    f32_count += 1;
 
                     tracing::debug!(
-                        "Allocated tensor '{}': {} bytes (F32 direct)",
+                        "Allocated tensor '{}': {} bytes (F32)",
                         name,
                         size_bytes
-                    );
-
-                    tensor_buffers.insert(name, buffer);
-                }
-
-                TensorDType::BF16 => {
-                    // Convert BF16 to F32 on-the-fly for WebGPU shader compatibility
-                    let f32_values = Self::bf16_to_f32(tensor.data);
-                    let f32_bytes: &[u8] = bytemuck::cast_slice(&f32_values);
-                    let size_bytes = f32_bytes.len();
-
-                    let buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                        label: Some(&format!("tensor_{}", name)),
-                        contents: f32_bytes,
-                        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-                    });
-
-                    total_bytes += size_bytes as u64;
-                    bf16_converted_count += 1;
-
-                    tracing::debug!(
-                        "Allocated tensor '{}': {} bytes (BF16 -> F32 upconverted, {} elements)",
-                        name,
-                        size_bytes,
-                        f32_values.len()
                     );
 
                     tensor_buffers.insert(name, buffer);
