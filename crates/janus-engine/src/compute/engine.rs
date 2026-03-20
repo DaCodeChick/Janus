@@ -37,13 +37,21 @@ impl ComputeEngine {
             adapter_info.backend
         );
 
-        // Request device and queue
+        // Get adapter limits and use them for the device
+        let adapter_limits = adapter.limits();
+        tracing::info!(
+            "Adapter limits: max_storage_buffer_binding_size={}, max_buffer_size={}",
+            adapter_limits.max_storage_buffer_binding_size,
+            adapter_limits.max_buffer_size
+        );
+
+        // Request device and queue with maximum available limits
         let (device, queue) = adapter
             .request_device(
                 &wgpu::DeviceDescriptor {
                     label: Some("janus_compute_device"),
                     required_features: wgpu::Features::empty(),
-                    required_limits: wgpu::Limits::default(),
+                    required_limits: adapter_limits.clone(),
                     memory_hints: wgpu::MemoryHints::Performance,
                     experimental_features: Default::default(),
                     trace: Default::default(),
@@ -52,7 +60,10 @@ impl ComputeEngine {
             .await
             .map_err(|e: wgpu::RequestDeviceError| ComputeError::DeviceRequestFailed(e.to_string()))?;
 
-        tracing::info!("GPU device initialized successfully");
+        tracing::info!(
+            "GPU device initialized with max_storage_buffer_binding_size={}",
+            device.limits().max_storage_buffer_binding_size
+        );
 
         Ok(Self {
             instance,
