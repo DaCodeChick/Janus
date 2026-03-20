@@ -297,6 +297,13 @@ impl KVCache {
         self.current_position
     }
     
+    /// Get references to both Key and Value cache buffers
+    /// 
+    /// Returns a tuple (key_cache, value_cache) for convenience
+    pub fn buffers(&self) -> (&wgpu::Buffer, &wgpu::Buffer) {
+        (&self.key_cache, &self.value_cache)
+    }
+    
     /// Reset the cache position to 0 (start of a new sequence)
     pub fn reset(&mut self) {
         self.current_position = 0;

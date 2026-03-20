@@ -880,6 +880,431 @@ pub async fn rope(
     Ok(output)
 }
 
+/// Uniforms structure for Attention and Softmax operations
+/// Must match the layout in attention.wgsl and softmax.wgsl
+#[repr(C)]
+#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+struct AttentionUniforms {
+    seq_len: u32,
+    num_heads: u32,
+    head_dim: u32,
+    scale: f32,
+}
+
+/// Uniforms structure for Softmax operation
+/// Must match the layout in softmax.wgsl
+#[repr(C)]
+#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+struct SoftmaxUniforms {
+    seq_len: u32,
+    num_heads: u32,
+    batch_size: u32,
+    _pad: u32,
+}
+
+/// Compute scaled dot-product attention: Attention(Q, K, V) = softmax(Q * K^T / sqrt(d)) * V
+///
+/// This function implements multi-head attention by:
+/// 1. Computing attention scores (Q * K^T) scaled by 1/sqrt(head_dim)
+/// 2. Applying softmax to get attention probabilities
+/// 3. Multiplying probabilities by values to get output
+///
+/// # Arguments
+/// * `engine` - The compute engine containing GPU device and queue
+/// * `query` - GPU buffer containing query tensor [num_heads * head_dim]
+/// * `key_cache` - GPU buffer containing all cached keys [seq_len * num_heads * head_dim]
+/// * `value_cache` - GPU buffer containing all cached values [seq_len * num_heads * head_dim]
+/// * `seq_len` - Current sequence length (number of tokens in cache)
+/// * `num_heads` - Number of attention heads
+/// * `head_dim` - Dimension of each attention head
+///
+/// # Returns
+/// GPU buffer containing attention output [num_heads * head_dim]
+///
+/// # Shaders
+/// Uses `shaders/attention.wgsl` and `shaders/softmax.wgsl` for compute operations.
+pub async fn compute_attention(
+    engine: &ComputeEngine,
+    query: &wgpu::Buffer,
+    key_cache: &wgpu::Buffer,
+    value_cache: &wgpu::Buffer,
+    seq_len: u32,
+    num_heads: u32,
+    head_dim: u32,
+) -> Result<wgpu::Buffer> {
+    let device = engine.device();
+    let queue = engine.queue();
+
+    // Calculate scale factor: 1/sqrt(head_dim)
+    let scale = 1.0 / (head_dim as f32).sqrt();
+
+    // Load shaders
+    let attention_shader_source = include_str!("shaders/attention.wgsl");
+    let softmax_shader_source = include_str!("shaders/softmax.wgsl");
+    
+    let attention_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("attention_shader"),
+        source: wgpu::ShaderSource::Wgsl(attention_shader_source.into()),
+    });
+    
+    let softmax_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("softmax_shader"),
+        source: wgpu::ShaderSource::Wgsl(softmax_shader_source.into()),
+    });
+
+    // Create intermediate buffers
+    // Scores buffer: [num_heads * seq_len] - attention scores before softmax
+    let scores_size = (num_heads * seq_len * std::mem::size_of::<f32>() as u32) as u64;
+    let scores = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("attention_scores"),
+        size: scores_size,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+        mapped_at_creation: false,
+    });
+
+    // Attention probabilities buffer: [num_heads * seq_len] - after softmax
+    let probs = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("attention_probs"),
+        size: scores_size,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+        mapped_at_creation: false,
+    });
+
+    // Output buffer: [num_heads * head_dim]
+    let output_size = (num_heads * head_dim * std::mem::size_of::<f32>() as u32) as u64;
+    let output = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("attention_output"),
+        size: output_size,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+
+    // Create uniforms
+    let attention_uniforms = AttentionUniforms {
+        seq_len,
+        num_heads,
+        head_dim,
+        scale,
+    };
+    let attention_uniforms_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("attention_uniforms"),
+        contents: bytemuck::cast_slice(&[attention_uniforms]),
+        usage: wgpu::BufferUsages::UNIFORM,
+    });
+
+    let softmax_uniforms = SoftmaxUniforms {
+        seq_len,
+        num_heads,
+        batch_size: num_heads, // Each head is a separate batch
+        _pad: 0,
+    };
+    let softmax_uniforms_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("softmax_uniforms"),
+        contents: bytemuck::cast_slice(&[softmax_uniforms]),
+        usage: wgpu::BufferUsages::UNIFORM,
+    });
+
+    // ===== Step 1: Compute Q * K^T scores =====
+    
+    let qk_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("qk_bind_group_layout"),
+        entries: &[
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 2,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: false },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 3,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+        ],
+    });
+
+    let qk_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("qk_bind_group"),
+        layout: &qk_bind_group_layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: query.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: key_cache.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: scores.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 3,
+                resource: attention_uniforms_buffer.as_entire_binding(),
+            },
+        ],
+    });
+
+    let qk_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("qk_pipeline_layout"),
+        bind_group_layouts: &[Some(&qk_bind_group_layout)],
+        immediate_size: Default::default(),
+    });
+
+    let qk_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        label: Some("qk_pipeline"),
+        layout: Some(&qk_pipeline_layout),
+        module: &attention_shader,
+        entry_point: Some("compute_qk_scores"),
+        compilation_options: Default::default(),
+        cache: None,
+    });
+
+    // ===== Step 2: Apply Softmax =====
+    
+    let softmax_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("softmax_bind_group_layout"),
+        entries: &[
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: false },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 2,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+        ],
+    });
+
+    let softmax_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("softmax_bind_group"),
+        layout: &softmax_bind_group_layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: scores.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: probs.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: softmax_uniforms_buffer.as_entire_binding(),
+            },
+        ],
+    });
+
+    let softmax_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("softmax_pipeline_layout"),
+        bind_group_layouts: &[Some(&softmax_bind_group_layout)],
+        immediate_size: Default::default(),
+    });
+
+    let softmax_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        label: Some("softmax_pipeline"),
+        layout: Some(&softmax_pipeline_layout),
+        module: &softmax_shader,
+        entry_point: Some("main"),
+        compilation_options: Default::default(),
+        cache: None,
+    });
+
+    // ===== Step 3: Apply attention weights to values =====
+    
+    let apply_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("apply_bind_group_layout"),
+        entries: &[
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 2,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: false },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 3,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+        ],
+    });
+
+    let apply_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("apply_bind_group"),
+        layout: &apply_bind_group_layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: probs.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: value_cache.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: output.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 3,
+                resource: attention_uniforms_buffer.as_entire_binding(),
+            },
+        ],
+    });
+
+    let apply_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("apply_pipeline_layout"),
+        bind_group_layouts: &[Some(&apply_bind_group_layout)],
+        immediate_size: Default::default(),
+    });
+
+    let apply_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        label: Some("apply_pipeline"),
+        layout: Some(&apply_pipeline_layout),
+        module: &attention_shader,
+        entry_point: Some("apply_attention"),
+        compilation_options: Default::default(),
+        cache: None,
+    });
+
+    // ===== Execute all three passes =====
+    
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+        label: Some("attention_encoder"),
+    });
+
+    // Pass 1: Compute QK scores
+    {
+        let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            label: Some("qk_pass"),
+            timestamp_writes: None,
+        });
+
+        compute_pass.set_pipeline(&qk_pipeline);
+        compute_pass.set_bind_group(0, &qk_bind_group, &[]);
+        
+        // One workgroup per head, 256 threads per workgroup
+        compute_pass.dispatch_workgroups(num_heads, 1, 1);
+    }
+
+    // Pass 2: Apply softmax
+    {
+        let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            label: Some("softmax_pass"),
+            timestamp_writes: None,
+        });
+
+        compute_pass.set_pipeline(&softmax_pipeline);
+        compute_pass.set_bind_group(0, &softmax_bind_group, &[]);
+        
+        // One workgroup per head (batch)
+        compute_pass.dispatch_workgroups(num_heads, 1, 1);
+    }
+
+    // Pass 3: Apply attention to values
+    {
+        let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            label: Some("apply_pass"),
+            timestamp_writes: None,
+        });
+
+        compute_pass.set_pipeline(&apply_pipeline);
+        compute_pass.set_bind_group(0, &apply_bind_group, &[]);
+        
+        // Total threads = num_heads * head_dim, 256 threads per workgroup
+        let total_threads = num_heads * head_dim;
+        let workgroup_count = (total_threads + 255) / 256;
+        compute_pass.dispatch_workgroups(workgroup_count, 1, 1);
+    }
+
+    // Submit and wait
+    queue.submit(Some(encoder.finish()));
+    let _ = device.poll(wgpu::PollType::wait_indefinitely());
+
+    Ok(output)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1647,5 +2072,231 @@ mod tests {
         println!("  Applied RoPE to {} elements", input.len());
         println!("  Stored in cache at position {}", position);
         println!("  Cache current position: {}", cache.current_position());
+    }
+
+    #[tokio::test]
+    async fn test_attention_simple() {
+        // Simple attention test with 2 heads, 4 dimensions, 3 sequence positions
+        let engine = ComputeEngine::new()
+            .await
+            .expect("Failed to create engine");
+        
+        let num_heads = 2;
+        let head_dim = 4;
+        let seq_len = 3;
+        
+        println!("\n=== Testing Scaled Dot-Product Attention ===");
+        println!("Configuration:");
+        println!("  num_heads = {}", num_heads);
+        println!("  head_dim = {}", head_dim);
+        println!("  seq_len = {}", seq_len);
+        
+        // Create simple test data
+        // Query: [num_heads * head_dim] = [2 * 4] = 8 elements
+        // For head 0: [1.0, 0.0, 0.0, 0.0]
+        // For head 1: [0.0, 1.0, 0.0, 0.0]
+        let query_data: Vec<f32> = vec![
+            1.0, 0.0, 0.0, 0.0,  // head 0
+            0.0, 1.0, 0.0, 0.0,  // head 1
+        ];
+        
+        // Keys: [seq_len * num_heads * head_dim] = [3 * 2 * 4] = 24 elements
+        // Position 0, head 0: [1.0, 0.0, 0.0, 0.0]
+        // Position 0, head 1: [0.0, 1.0, 0.0, 0.0]
+        // Position 1, head 0: [0.5, 0.5, 0.0, 0.0]
+        // Position 1, head 1: [0.5, 0.5, 0.0, 0.0]
+        // Position 2, head 0: [0.0, 0.0, 1.0, 0.0]
+        // Position 2, head 1: [0.0, 0.0, 1.0, 0.0]
+        let key_data: Vec<f32> = vec![
+            // Position 0
+            1.0, 0.0, 0.0, 0.0,  // head 0
+            0.0, 1.0, 0.0, 0.0,  // head 1
+            // Position 1
+            0.5, 0.5, 0.0, 0.0,  // head 0
+            0.5, 0.5, 0.0, 0.0,  // head 1
+            // Position 2
+            0.0, 0.0, 1.0, 0.0,  // head 0
+            0.0, 0.0, 1.0, 0.0,  // head 1
+        ];
+        
+        // Values: [seq_len * num_heads * head_dim] = [3 * 2 * 4] = 24 elements
+        // Each position has a distinct pattern to verify weighted sum
+        let value_data: Vec<f32> = vec![
+            // Position 0
+            1.0, 0.0, 0.0, 0.0,  // head 0
+            0.0, 1.0, 0.0, 0.0,  // head 1
+            // Position 1
+            2.0, 0.0, 0.0, 0.0,  // head 0
+            0.0, 2.0, 0.0, 0.0,  // head 1
+            // Position 2
+            3.0, 0.0, 0.0, 0.0,  // head 0
+            0.0, 3.0, 0.0, 0.0,  // head 1
+        ];
+        
+        let device = engine.device();
+        
+        // Create GPU buffers
+        let query_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("query"),
+            contents: bytemuck::cast_slice(&query_data),
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        });
+        
+        let key_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("keys"),
+            contents: bytemuck::cast_slice(&key_data),
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        });
+        
+        let value_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("values"),
+            contents: bytemuck::cast_slice(&value_data),
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        });
+        
+        // Compute attention
+        let output = compute_attention(
+            &engine,
+            &query_buffer,
+            &key_buffer,
+            &value_buffer,
+            seq_len,
+            num_heads,
+            head_dim,
+        )
+        .await
+        .expect("compute_attention failed");
+        
+        // Read result
+        let result = read_buffer_to_vec(&engine, &output, (num_heads * head_dim * 4) as u64).await;
+        
+        println!("\nAttention output:");
+        for h in 0..num_heads as usize {
+            println!("  Head {}: {:?}", h, &result[h*head_dim as usize..(h+1)*head_dim as usize]);
+        }
+        
+        // Verify output shape
+        assert_eq!(result.len(), (num_heads * head_dim) as usize);
+        
+        // For head 0: Query [1,0,0,0] should match strongly with Key position 0 [1,0,0,0]
+        // and weakly with position 1 [0.5,0.5,0,0], not at all with position 2 [0,0,1,0]
+        // So the output should be dominated by Value position 0
+        
+        // For head 1: Query [0,1,0,0] should match strongly with Key position 0 [0,1,0,0]
+        // and weakly with position 1 [0.5,0.5,0,0], not at all with position 2
+        
+        // The first dimension of each head should be positive (weighted sum of positive values)
+        assert!(result[0] > 0.0, "Head 0, dim 0 should be positive");
+        assert!(result[4] < 0.5, "Head 1, dim 0 should be small (near zero)");
+        assert!(result[5] > 0.0, "Head 1, dim 1 should be positive");
+        
+        println!("✓ Attention mechanism test passed!");
+        println!("  Processed query with {} heads, {} dimensions", num_heads, head_dim);
+        println!("  Computed attention over {} sequence positions", seq_len);
+    }
+
+    #[tokio::test]
+    async fn test_attention_with_cache() {
+        // Test attention integrated with KVCache
+        let engine = ComputeEngine::new()
+            .await
+            .expect("Failed to create engine");
+        
+        let num_heads = 2;
+        let head_dim = 8;
+        let max_seq_len = 128;
+        let current_seq_len = 4;
+        
+        println!("\n=== Testing Attention with KVCache ===");
+        println!("Configuration:");
+        println!("  num_heads = {}", num_heads);
+        println!("  head_dim = {}", head_dim);
+        println!("  max_seq_len = {}", max_seq_len);
+        println!("  current_seq_len = {}", current_seq_len);
+        
+        // Create KV cache
+        let mut cache = super::super::cache::KVCache::new(&engine, max_seq_len, num_heads, head_dim)
+            .expect("Failed to create cache");
+        
+        let device = engine.device();
+        
+        // Populate cache with some test data for first 4 positions
+        for pos in 0..current_seq_len {
+            // Create simple keys and values for this position
+            let key_data: Vec<f32> = (0..num_heads * head_dim)
+                .map(|i| (pos as f32 + 1.0) * (i % head_dim) as f32 / head_dim as f32)
+                .collect();
+            
+            let value_data: Vec<f32> = (0..num_heads * head_dim)
+                .map(|i| (pos as f32 + 1.0) / (i % head_dim + 1) as f32)
+                .collect();
+            
+            let key_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some(&format!("key_{}", pos)),
+                contents: bytemuck::cast_slice(&key_data),
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            });
+            
+            let value_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some(&format!("value_{}", pos)),
+                contents: bytemuck::cast_slice(&value_data),
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            });
+            
+            cache.update(&engine, &key_buffer, &value_buffer, pos)
+                .await
+                .expect("Failed to update cache");
+        }
+        
+        println!("Populated cache with {} positions", current_seq_len);
+        
+        // Create a query
+        let query_data: Vec<f32> = (0..num_heads * head_dim)
+            .map(|i| if i % head_dim == 0 { 1.0 } else { 0.1 })
+            .collect();
+        
+        let query_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("query"),
+            contents: bytemuck::cast_slice(&query_data),
+            usage: wgpu::BufferUsages::STORAGE,
+        });
+        
+        // Get cache buffers
+        let (key_cache, value_cache) = cache.buffers();
+        
+        // Compute attention
+        let output = compute_attention(
+            &engine,
+            &query_buffer,
+            key_cache,
+            value_cache,
+            current_seq_len,
+            num_heads,
+            head_dim,
+        )
+        .await
+        .expect("compute_attention failed");
+        
+        // Read result
+        let result = read_buffer_to_vec(&engine, &output, (num_heads * head_dim * 4) as u64).await;
+        
+        println!("\nAttention output with cache:");
+        for h in 0..num_heads as usize {
+            let head_output = &result[h*head_dim as usize..(h+1)*head_dim as usize];
+            println!("  Head {}: first 4 dims = [{:.3}, {:.3}, {:.3}, {:.3}]", 
+                     h, head_output[0], head_output[1], head_output[2], head_output[3]);
+        }
+        
+        // Verify output shape
+        assert_eq!(result.len(), (num_heads * head_dim) as usize);
+        
+        // All outputs should be finite (not NaN or Inf)
+        for &val in &result {
+            assert!(val.is_finite(), "Output contains non-finite value: {}", val);
+        }
+        
+        println!("✓ Attention with KVCache test passed!");
+        println!("  Successfully computed attention over cached K/V tensors");
+        println!("  Output shape: [{}]", result.len());
     }
 }
