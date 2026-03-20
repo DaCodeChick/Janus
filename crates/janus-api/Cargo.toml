@@ -9,5 +9,5 @@ authors.workspace = true
 workspace = true
 
 [dependencies]
-abi_stable = { workspace = true }
-bitflags = { workspace = true }
+abi_stable.workspace = true
+bitflags.workspace = true

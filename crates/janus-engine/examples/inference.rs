@@ -1,9 +1,12 @@
 //! Simple inference example showing how to load a model and generate text
 //!
-//! Usage:
+//! Usage (directory mode):
 //!   cargo run --example inference <model_dir> "<prompt>"
 //!
-//! The model_dir should contain:
+//! Usage (file mode):
+//!   cargo run --example inference <model.gguf|model.safetensors> <config.json> <tokenizer.json> "<prompt>"
+//!
+//! Directory mode expects model_dir to contain:
 //!   - model.gguf or model.safetensors (model weights)
 //!   - config.json (HuggingFace config)
 //!   - tokenizer.json (HuggingFace tokenizer)
@@ -12,7 +15,7 @@ use std::collections::HashMap;
 use std::env;
 use std::path::PathBuf;
 use janus_engine::{
-    ComputeEngine, GGUFLoader, ModelLoader, HuggingFaceConfig,
+    ComputeEngine, GGUFLoader, SafetensorsLoader, ModelLoader, HuggingFaceConfig,
     Model, Tokenizer, Sampler, TransformerBlock, TransformerBlockConfig
 };
 
@@ -91,27 +94,59 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Parse command line arguments
     let args: Vec<String> = env::args().collect();
 
-    if args.len() < 3 {
-        eprintln!("Usage: cargo run --example inference <model_dir> \"<prompt>\"");
-        eprintln!("\nExample:");
-        eprintln!("  cargo run --example inference models/llama-7b \"Hello, world!\"");
-        eprintln!("\nThe model_dir should contain:");
-        eprintln!("  - model.gguf (model weights)");
-        eprintln!("  - config.json (HuggingFace config)");
-        eprintln!("  - tokenizer.json (HuggingFace tokenizer)");
-        std::process::exit(1);
-    }
+    // Determine if we're in directory mode or file mode
+    let (model_path, config_path, tokenizer_path, prompt) = if args.len() == 3 {
+        // Directory mode: <model_dir> "<prompt>"
+        let model_dir = PathBuf::from(&args[1]);
+        let prompt = &args[2];
+        
+        if !model_dir.is_dir() {
+            eprintln!("Error: '{}' is not a directory", model_dir.display());
+            eprintln!("\nUsage (directory mode):");
+            eprintln!("  cargo run --example inference <model_dir> \"<prompt>\"");
+            eprintln!("\nUsage (file mode):");
+            eprintln!("  cargo run --example inference <model_file> <config.json> <tokenizer.json> \"<prompt>\"");
+            std::process::exit(1);
+        }
 
-    let model_dir = PathBuf::from(&args[1]);
-    let prompt = &args[2];
+        // Find model file
+        let model_file = ["model.gguf", "model.safetensors", "pytorch_model.bin"]
+            .iter()
+            .map(|name| model_dir.join(name))
+            .find(|path| path.exists())
+            .ok_or("No model file found in directory (tried model.gguf, model.safetensors)")?;
+
+        let config = model_dir.join("config.json");
+        let tokenizer = model_dir.join("tokenizer.json");
+
+        (model_file, config, tokenizer, prompt.clone())
+    } else if args.len() == 5 {
+        // File mode: <model_file> <config.json> <tokenizer.json> "<prompt>"
+        (
+            PathBuf::from(&args[1]),
+            PathBuf::from(&args[2]),
+            PathBuf::from(&args[3]),
+            args[4].clone(),
+        )
+    } else {
+        eprintln!("Usage (directory mode):");
+        eprintln!("  cargo run --example inference <model_dir> \"<prompt>\"");
+        eprintln!("\nUsage (file mode):");
+        eprintln!("  cargo run --example inference <model_file> <config.json> <tokenizer.json> \"<prompt>\"");
+        eprintln!("\nExamples:");
+        eprintln!("  cargo run --example inference models/llama-7b \"Hello, world!\"");
+        eprintln!("  cargo run --example inference model.gguf config.json tokenizer.json \"Hello, world!\"");
+        std::process::exit(1);
+    };
 
     println!("=== Janus Engine Inference Example ===\n");
-    println!("Model directory: {:?}", model_dir);
+    println!("Model file: {:?}", model_path);
+    println!("Config: {:?}", config_path);
+    println!("Tokenizer: {:?}", tokenizer_path);
     println!("Prompt: \"{}\"\n", prompt);
 
     // Load configuration
     println!(">> Loading model configuration...");
-    let config_path = model_dir.join("config.json");
     let hf_config = HuggingFaceConfig::from_file(&config_path)?;
     let model_config = hf_config.to_model_config();
     println!("   Hidden dim: {}", model_config.hidden_dim);
@@ -121,7 +156,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Load tokenizer
     println!("\n>> Loading tokenizer...");
-    let tokenizer_path = model_dir.join("tokenizer.json");
     let tokenizer = Tokenizer::from_file(tokenizer_path.to_str().unwrap())?;
     println!("   Tokenizer loaded successfully");
 
@@ -131,20 +165,40 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let info = engine.adapter_info();
     println!("   Using GPU: {} ({:?})", info.name, info.backend);
 
-    // Load model weights
+    // Load model weights based on file extension
     println!("\n>> Loading model weights...");
-    let model_path = model_dir.join("model.gguf");
-    let loader = GGUFLoader::from_file(&model_path)?;
-    println!("   Format: GGUF");
+    let extension = model_path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("");
     
-    // Show model metadata
-    if let Some(arch) = loader.get_metadata("general.architecture") {
-        println!("   Architecture: {}", arch);
-    }
+    let tensors = match extension {
+        "gguf" => {
+            let loader = GGUFLoader::from_file(&model_path)?;
+            println!("   Format: GGUF");
+            
+            // Show model metadata
+            if let Some(arch) = loader.get_metadata("general.architecture") {
+                println!("   Architecture: {}", arch);
+            }
+            
+            // Allocate tensors to GPU
+            println!("   Allocating tensors to GPU VRAM...");
+            engine.allocate_tensors(&loader)?
+        }
+        "safetensors" => {
+            let loader = SafetensorsLoader::from_file(&model_path)?;
+            println!("   Format: Safetensors");
+            
+            // Allocate tensors to GPU
+            println!("   Allocating tensors to GPU VRAM...");
+            engine.allocate_tensors(&loader)?
+        }
+        _ => {
+            return Err(format!("Unsupported model file format: {}", extension).into());
+        }
+    };
     
-    // Allocate tensors to GPU
-    println!("\n>> Allocating tensors to GPU VRAM...");
-    let tensors = engine.allocate_tensors(&loader)?;
     println!("   Allocated {} tensors to GPU", tensors.len());
 
     // Build transformer blocks
@@ -227,7 +281,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Generate text
     println!("\n>> Generating text...\n");
     println!("---");
-    let _output = model.generate(prompt, 128).await?;
+    let _output = model.generate(&prompt, 128).await?;
     println!("---");
 
     println!("\n=== Generation Complete ===");

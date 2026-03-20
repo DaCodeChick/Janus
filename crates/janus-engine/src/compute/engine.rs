@@ -82,6 +82,30 @@ impl ComputeEngine {
         &self.queue
     }
 
+    /// Convert BF16 bytes to F32 on CPU before GPU upload
+    ///
+    /// BF16 (Brain Floating Point) is F32 with the lower 16 bits truncated.
+    /// To convert: take the 16-bit BF16 value and pad with 16 zero bits.
+    fn bf16_to_f32(bf16_data: &[u8]) -> Vec<f32> {
+        let num_elements = bf16_data.len() / 2;
+        let mut f32_data = Vec::with_capacity(num_elements);
+
+        for i in 0..num_elements {
+            // Read BF16 as u16 (little-endian)
+            let bf16 = u16::from_le_bytes([bf16_data[i * 2], bf16_data[i * 2 + 1]]);
+            
+            // Convert to F32 by padding with 16 zero bits
+            // BF16: [sign bit][8 exp bits][7 mantissa bits]
+            // F32:  [sign bit][8 exp bits][23 mantissa bits]
+            let f32_bits = (bf16 as u32) << 16;
+            let f32_value = f32::from_bits(f32_bits);
+            
+            f32_data.push(f32_value);
+        }
+
+        f32_data
+    }
+
     /// Allocate tensors from a model file to GPU buffers
     ///
     /// Accepts any ModelLoader implementation (GGUF, Safetensors, etc.)
@@ -89,8 +113,9 @@ impl ComputeEngine {
     ///
     /// # Supported Data Types
     /// - **F32**: Direct zero-copy transfer to GPU
+    /// - **BF16**: Converted to F32 on CPU, then uploaded to GPU
     /// - **Q4_K**: Quantized format, dequantized on-the-fly in shader
-    /// - **Other types**: Skipped with warning (BF16, other quantization formats not yet supported)
+    /// - **Other types**: Skipped with warning
     pub fn allocate_tensors<L: ModelLoader>(&self, loader: &L) -> Result<HashMap<String, wgpu::Buffer>> {
         let tensors = loader.tensors()
             .map_err(|e| ComputeError::Other(format!("Failed to load tensors: {}", e)))?;
@@ -102,6 +127,7 @@ impl ComputeEngine {
         let mut total_bytes = 0u64;
         let mut skipped_count = 0;
         let mut f32_count = 0;
+        let mut bf16_count = 0;
         let mut q4k_count = 0;
 
         for (name, tensor) in tensors {
@@ -123,6 +149,30 @@ impl ComputeEngine {
                         "Allocated tensor '{}': {} bytes (F32)",
                         name,
                         size_bytes
+                    );
+
+                    tensor_buffers.insert(name, buffer);
+                }
+
+                TensorDType::BF16 => {
+                    // Convert BF16 to F32 on CPU, then upload
+                    let f32_data = Self::bf16_to_f32(tensor.data);
+                    let f32_bytes = bytemuck::cast_slice(&f32_data);
+                    
+                    let buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                        label: Some(&format!("tensor_{}_bf16_to_f32", name)),
+                        contents: f32_bytes,
+                        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                    });
+
+                    total_bytes += f32_bytes.len() as u64;
+                    bf16_count += 1;
+
+                    tracing::debug!(
+                        "Allocated tensor '{}': {} bytes (BF16 -> F32, {} elements)",
+                        name,
+                        f32_bytes.len(),
+                        f32_data.len()
                     );
 
                     tensor_buffers.insert(name, buffer);
@@ -164,10 +214,11 @@ impl ComputeEngine {
 
         let total_mb = total_bytes as f64 / (1024.0 * 1024.0);
         tracing::info!(
-            "Successfully allocated {} tensors ({:.2} MB) to GPU VRAM: {} F32, {} Q4_K, {} skipped",
+            "Successfully allocated {} tensors ({:.2} MB) to GPU VRAM: {} F32, {} BF16->F32, {} Q4_K, {} skipped",
             tensor_buffers.len(),
             total_mb,
             f32_count,
+            bf16_count,
             q4k_count,
             skipped_count
         );
