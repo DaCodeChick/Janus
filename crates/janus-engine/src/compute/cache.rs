@@ -13,7 +13,7 @@ use wgpu::util::DeviceExt;
 /// token and all previous tokens. Instead of recomputing the Key and Value projections
 /// for all previous tokens at each step, we cache them in GPU memory.
 ///
-/// Layout: [max_seq_len][num_kv_heads][head_dim]
+/// Layout: [num_layers][max_seq_len][num_kv_heads][head_dim]
 /// Note: For GQA (Grouped Query Attention), num_kv_heads < num_query_heads
 pub struct KVCache {
     /// GPU buffer for cached Keys
@@ -21,6 +21,9 @@ pub struct KVCache {
     
     /// GPU buffer for cached Values
     value_cache: wgpu::Buffer,
+    
+    /// Number of transformer layers
+    num_layers: u32,
     
     /// Maximum sequence length supported by this cache
     max_seq_len: u32,
@@ -40,6 +43,7 @@ impl KVCache {
     ///
     /// # Arguments
     /// * `engine` - The compute engine for GPU operations
+    /// * `num_layers` - Number of transformer layers
     /// * `max_seq_len` - Maximum sequence length to support (e.g., 2048, 4096)
     /// * `num_kv_heads` - Number of KV attention heads (for GQA)
     /// * `head_dim` - Dimension of each attention head
@@ -48,17 +52,19 @@ impl KVCache {
     /// A new KVCache instance with pre-allocated GPU buffers
     pub fn new(
         engine: &ComputeEngine,
+        num_layers: u32,
         max_seq_len: u32,
         num_kv_heads: u32,
         head_dim: u32,
     ) -> Result<Self> {
         let device = engine.device();
         
-        // Calculate total size in bytes
-        let cache_size = (max_seq_len * num_kv_heads * head_dim) as u64 * std::mem::size_of::<f32>() as u64;
+        // Calculate total size in bytes (multiply by num_layers to segment by layer)
+        let cache_size = (num_layers * max_seq_len * num_kv_heads * head_dim) as u64 * std::mem::size_of::<f32>() as u64;
         
         tracing::info!(
-            "Allocating KV cache: max_seq_len={}, num_kv_heads={}, head_dim={}, total_size={:.2} MB",
+            "Allocating KV cache: num_layers={}, max_seq_len={}, num_kv_heads={}, head_dim={}, total_size={:.2} MB",
+            num_layers,
             max_seq_len,
             num_kv_heads,
             head_dim,
@@ -84,6 +90,7 @@ impl KVCache {
         Ok(Self {
             key_cache,
             value_cache,
+            num_layers,
             max_seq_len,
             num_kv_heads,
             head_dim,
@@ -97,6 +104,7 @@ impl KVCache {
     /// * `engine` - The compute engine for GPU operations
     /// * `new_key` - GPU buffer containing the new Key projection (num_kv_heads * head_dim elements)
     /// * `new_value` - GPU buffer containing the new Value projection (num_kv_heads * head_dim elements)
+    /// * `layer_idx` - The transformer layer index (0 to num_layers-1)
     /// * `position` - Position in the sequence to write to (0 to max_seq_len-1)
     ///
     /// # Returns
@@ -106,16 +114,17 @@ impl KVCache {
         engine: &ComputeEngine,
         new_key: &wgpu::Buffer,
         new_value: &wgpu::Buffer,
+        layer_idx: u32,
         position: u32,
     ) -> Result<()> {
         // Ensure position is within bounds
         let cache_position = position % self.max_seq_len;
         
         // Update Key cache
-        self.update_cache_buffer(engine, new_key, &self.key_cache, cache_position).await?;
+        self.update_cache_buffer(engine, new_key, &self.key_cache, layer_idx, cache_position).await?;
         
         // Update Value cache
-        self.update_cache_buffer(engine, new_value, &self.value_cache, cache_position).await?;
+        self.update_cache_buffer(engine, new_value, &self.value_cache, layer_idx, cache_position).await?;
         
         self.current_position = cache_position + 1;
         
@@ -128,6 +137,7 @@ impl KVCache {
         engine: &ComputeEngine,
         new_data: &wgpu::Buffer,
         cache: &wgpu::Buffer,
+        layer_idx: u32,
         position: u32,
     ) -> Result<()> {
         let device = engine.device();
@@ -147,14 +157,18 @@ impl KVCache {
             cache_position: u32,
             token_dim: u32,
             num_heads: u32,
-            _pad: u32,
+            layer_idx: u32,
+            max_seq_len: u32,
+            _pad: [u32; 7], // Pad to 48 bytes (12 u32s total)
         }
         
         let uniforms = UpdateCacheUniforms {
             cache_position: position,
             token_dim: self.head_dim,
             num_heads: self.num_kv_heads,
-            _pad: 0,
+            layer_idx,
+            max_seq_len: self.max_seq_len,
+            _pad: [0; 7],
         };
         
         let uniforms_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {

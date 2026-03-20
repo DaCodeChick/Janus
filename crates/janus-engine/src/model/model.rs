@@ -157,9 +157,10 @@ impl Model {
             )));
         }
 
-        // Create KV cache (uses num_kv_heads for GQA support)
+        // Create KV cache (uses num_kv_heads for GQA support, segmented by layer)
         let cache = KVCache::new(
             &engine,
+            config.num_layers,
             config.max_seq_len,
             config.num_kv_heads,
             config.head_dim,
@@ -379,7 +380,7 @@ impl Model {
         for (layer_idx, block) in self.blocks.iter().enumerate() {
             tracing::debug!("Layer {}/{}: forward pass", layer_idx + 1, self.config.num_layers);
             hidden = block
-                .forward(&self.engine, &hidden, &mut self.cache, seq_pos)
+                .forward(&self.engine, &hidden, &mut self.cache, layer_idx as u32, seq_pos)
                 .await?;
         }
 

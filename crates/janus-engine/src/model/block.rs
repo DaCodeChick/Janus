@@ -120,6 +120,7 @@ impl TransformerBlock {
     /// * `engine` - The compute engine for GPU operations
     /// * `input` - Input tensor [hidden_dim] for the current token
     /// * `cache` - KV cache for storing/retrieving attention keys and values
+    /// * `layer_idx` - The transformer layer index (for cache segmentation)
     /// * `seq_pos` - Position in the sequence (for RoPE)
     ///
     /// # Returns
@@ -129,6 +130,7 @@ impl TransformerBlock {
         engine: &ComputeEngine,
         input: &wgpu::Buffer,
         cache: &mut KVCache,
+        layer_idx: u32,
         seq_pos: u32,
     ) -> Result<wgpu::Buffer> {
         // ===================================================================
@@ -201,7 +203,7 @@ impl TransformerBlock {
         .await?;
 
         // Step 4: Update KV cache with new K and V
-        cache.update(engine, &k_rot, &v, seq_pos).await?;
+        cache.update(engine, &k_rot, &v, layer_idx, seq_pos).await?;
 
         // Step 5: Compute attention using cached K and V
         let (key_cache, value_cache) = cache.buffers();
@@ -212,7 +214,9 @@ impl TransformerBlock {
             &q_rot,
             key_cache,
             value_cache,
+            layer_idx,
             current_seq_len,
+            cache.max_seq_len(),
             self.config.num_heads,
             self.config.num_kv_heads,
             self.config.head_dim,

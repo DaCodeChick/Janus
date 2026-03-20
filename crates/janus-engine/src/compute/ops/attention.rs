@@ -20,7 +20,9 @@ struct AttentionUniforms {
     num_kv_heads: u32,
     head_dim: u32,
     scale: f32,
-    _pad: [u32; 3],
+    layer_idx: u32,
+    max_seq_len: u32,
+    _pad: u32,
 }
 
 /// Uniforms structure for Softmax operation
@@ -48,9 +50,11 @@ struct SoftmaxUniforms {
 /// # Arguments
 /// * `engine` - The compute engine containing GPU device and queue
 /// * `query` - GPU buffer containing query tensor [num_heads * head_dim]
-/// * `key_cache` - GPU buffer containing all cached keys [seq_len * num_kv_heads * head_dim]
-/// * `value_cache` - GPU buffer containing all cached values [seq_len * num_kv_heads * head_dim]
+/// * `key_cache` - GPU buffer containing all cached keys [num_layers * seq_len * num_kv_heads * head_dim]
+/// * `value_cache` - GPU buffer containing all cached values [num_layers * seq_len * num_kv_heads * head_dim]
+/// * `layer_idx` - The transformer layer index (for cache segmentation)
 /// * `seq_len` - Current sequence length (number of tokens in cache)
+/// * `max_seq_len` - Maximum sequence length supported by cache
 /// * `num_heads` - Number of query attention heads
 /// * `num_kv_heads` - Number of key-value attention heads (for GQA)
 /// * `head_dim` - Dimension of each attention head
@@ -65,7 +69,9 @@ pub async fn compute_attention(
     query: &wgpu::Buffer,
     key_cache: &wgpu::Buffer,
     value_cache: &wgpu::Buffer,
+    layer_idx: u32,
     seq_len: u32,
+    max_seq_len: u32,
     num_heads: u32,
     num_kv_heads: u32,
     head_dim: u32,
@@ -124,7 +130,9 @@ pub async fn compute_attention(
         num_kv_heads,
         head_dim,
         scale,
-        _pad: [0; 3],
+        layer_idx,
+        max_seq_len,
+        _pad: 0,
     };
     let attention_uniforms_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("attention_uniforms"),
