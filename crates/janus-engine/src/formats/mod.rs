@@ -111,6 +111,7 @@ pub type Result<T> = std::result::Result<T, FormatError>;
 
 /// Data type of a tensor
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(non_camel_case_types)]
 pub enum TensorDType {
     F32,
     F16,
@@ -125,8 +126,11 @@ pub enum TensorDType {
     U64,
     Q4_0,
     Q4_1,
+    Q4_K,
     Q5_0,
     Q5_1,
+    Q5_K,
+    Q6_K,
     Q8_0,
     Q8_1,
 }
@@ -141,7 +145,9 @@ impl TensorDType {
             TensorDType::I64 | TensorDType::U64 => 8,
             // Quantized types have variable sizes - these are approximations
             TensorDType::Q4_0 | TensorDType::Q4_1 => 1, // ~0.5 bytes per element in blocks
-            TensorDType::Q5_0 | TensorDType::Q5_1 => 1, // ~0.625 bytes per element in blocks
+            TensorDType::Q4_K => 1, // 144 bytes per 256 elements = 0.5625 bytes per element
+            TensorDType::Q5_0 | TensorDType::Q5_1 | TensorDType::Q5_K => 1, // ~0.625 bytes per element in blocks
+            TensorDType::Q6_K => 1, // ~0.75 bytes per element in blocks
             TensorDType::Q8_0 | TensorDType::Q8_1 => 1,
         }
     }

@@ -137,6 +137,7 @@ impl ComputeEngine {
         let mut skipped_count = 0;
         let mut bf16_converted_count = 0;
         let mut f32_direct_count = 0;
+        let mut q4k_count = 0;
 
         for (name, tensor) in tensors {
             match tensor.dtype {
@@ -187,8 +188,30 @@ impl ComputeEngine {
                     tensor_buffers.insert(name, buffer);
                 }
 
+                TensorDType::Q4_K => {
+                    // Q4_K: Keep quantized format, dequantize on-the-fly in shader
+                    let size_bytes = tensor.data.len();
+
+                    let buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                        label: Some(&format!("tensor_{}_q4k", name)),
+                        contents: tensor.data,
+                        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                    });
+
+                    total_bytes += size_bytes as u64;
+                    q4k_count += 1;
+
+                    tracing::debug!(
+                        "Allocated tensor '{}': {} bytes (Q4_K quantized, on-the-fly dequantization)",
+                        name,
+                        size_bytes
+                    );
+
+                    tensor_buffers.insert(name, buffer);
+                }
+
                 _ => {
-                    // Skip unsupported types (quantized formats will be added in Phase 6)
+                    // Skip unsupported types (other quantized formats will be added later)
                     tracing::warn!(
                         "Skipping tensor '{}' with type {:?} (not yet supported)",
                         name,
@@ -201,11 +224,12 @@ impl ComputeEngine {
 
         let total_mb = total_bytes as f64 / (1024.0 * 1024.0);
         tracing::info!(
-            "Successfully allocated {} tensors ({:.2} MB) to GPU VRAM: {} F32 direct, {} BF16->F32 upconverted, {} skipped",
+            "Successfully allocated {} tensors ({:.2} MB) to GPU VRAM: {} F32, {} BF16->F32, {} Q4_K, {} skipped",
             tensor_buffers.len(),
             total_mb,
             f32_direct_count,
             bf16_converted_count,
+            q4k_count,
             skipped_count
         );
 

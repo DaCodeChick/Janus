@@ -11,7 +11,7 @@ pub use error::{GGUFError, Result as GGUFResult};
 pub use parser::GGUFParser;
 pub use types::{GGMLType, GGUFHeader, GGUFMetadata, MetadataValue, MetadataValueType, TensorInfo};
 
-use super::{FormatError, ModelLoader, Result, TensorData, TensorDType};
+use super::{FormatError, ModelLoader, Result, TensorDType, TensorData};
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -55,12 +55,15 @@ impl GGUFFile {
             GGMLType::I64 => TensorDType::I64,
             GGMLType::Q4_0 => TensorDType::Q4_0,
             GGMLType::Q4_1 => TensorDType::Q4_1,
+            GGMLType::Q4_K => TensorDType::Q4_K,
             GGMLType::Q5_0 => TensorDType::Q5_0,
             GGMLType::Q5_1 => TensorDType::Q5_1,
+            GGMLType::Q5_K => TensorDType::Q5_K,
+            GGMLType::Q6_K => TensorDType::Q6_K,
             GGMLType::Q8_0 => TensorDType::Q8_0,
             GGMLType::Q8_1 => TensorDType::Q8_1,
             // For unsupported quantization types, default to Q8_0 as a placeholder
-            // These will be skipped during tensor allocation in Phase 5
+            // These will be skipped during tensor allocation
             _ => TensorDType::Q8_0,
         }
     }
@@ -94,11 +97,7 @@ impl ModelLoader for GGUFFile {
             let data = self.parser.get_tensor_data(tensor_info);
 
             // Convert Vec<u64> to Vec<usize> for dimensions
-            let shape: Vec<usize> = tensor_info
-                .dimensions
-                .iter()
-                .map(|&d| d as usize)
-                .collect();
+            let shape: Vec<usize> = tensor_info.dimensions.iter().map(|&d| d as usize).collect();
 
             let tensor = TensorData {
                 name: tensor_info.name.clone(),
@@ -120,12 +119,7 @@ impl ModelLoader for GGUFFile {
     }
 
     fn metadata_keys(&self) -> Vec<String> {
-        self.parser
-            .metadata()
-            .metadata
-            .keys()
-            .cloned()
-            .collect()
+        self.parser.metadata().metadata.keys().cloned().collect()
     }
 }
 
