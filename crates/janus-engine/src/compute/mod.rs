@@ -5,6 +5,7 @@ mod buffer;
 mod engine;
 mod error;
 mod kernels;
+pub mod ops;
 
 pub use backend::{ComputeBackend, DeviceInfo};
 pub use buffer::{Buffer, BufferUsage};

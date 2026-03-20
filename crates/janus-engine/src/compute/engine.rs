@@ -86,15 +86,33 @@ impl ComputeEngine {
     ///
     /// This performs a zero-copy move from the memory-mapped file directly to GPU buffers.
     /// Returns a registry mapping tensor names to their GPU buffers.
+    ///
+    /// # Phase 5 Note
+    /// Currently only F32 tensors are supported. Non-F32 tensors are skipped with a warning.
+    /// Quantization support will be added in Phase 6.
     pub fn allocate_tensors(&self, gguf: &GGUFFile) -> Result<HashMap<String, wgpu::Buffer>> {
+        use crate::gguf::GGMLType;
+        
         let mut tensor_buffers = HashMap::new();
         let tensors = gguf.tensors();
 
         tracing::info!("Allocating {} tensors to GPU VRAM", tensors.len());
 
         let mut total_bytes = 0u64;
+        let mut skipped_count = 0;
 
         for tensor in tensors {
+            // Phase 5: Skip non-F32 tensors with a warning
+            if tensor.ggml_type != GGMLType::F32 {
+                tracing::warn!(
+                    "Skipping tensor '{}' with type {:?} (only F32 supported in Phase 5)",
+                    tensor.name,
+                    tensor.ggml_type
+                );
+                skipped_count += 1;
+                continue;
+            }
+
             // Get the exact byte slice for this tensor from the mmap
             let tensor_data = gguf.get_tensor_data(tensor);
             let size_bytes = tensor.size_bytes();
@@ -128,9 +146,10 @@ impl ComputeEngine {
 
         let total_mb = total_bytes as f64 / (1024.0 * 1024.0);
         tracing::info!(
-            "Successfully allocated {} tensors ({:.2} MB) to GPU VRAM",
+            "Successfully allocated {} F32 tensors ({:.2} MB) to GPU VRAM (skipped {} non-F32 tensors)",
             tensor_buffers.len(),
-            total_mb
+            total_mb,
+            skipped_count
         );
 
         Ok(tensor_buffers)
