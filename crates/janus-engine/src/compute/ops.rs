@@ -705,6 +705,181 @@ pub async fn rmsnorm(
     Ok(output)
 }
 
+/// Uniforms structure for RoPE (Rotary Positional Embeddings)
+/// Must match the layout in rope.wgsl
+#[repr(C)]
+#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+struct RopeUniforms {
+    seq_len: u32,
+    head_dim: u32,
+    position: u32,
+    theta_base: f32,
+}
+
+/// Apply Rotary Positional Embeddings (RoPE) to queries or keys
+///
+/// RoPE encodes positional information by rotating pairs of dimensions in the embedding space.
+/// This allows the model to understand token ordering without explicit position embeddings.
+///
+/// # Arguments
+/// * `engine` - The compute engine containing GPU device and queue
+/// * `input` - GPU buffer containing input tensor (seq_len * head_dim elements)
+/// * `seq_len` - Sequence length (number of tokens)
+/// * `head_dim` - Dimension of each attention head (must be even)
+/// * `position` - Starting position in the sequence
+/// * `theta_base` - Base for frequency calculation (typically 10000.0)
+///
+/// # Returns
+/// GPU buffer containing the output tensor with rotary embeddings applied
+///
+/// # Shader
+/// Uses the WGSL shader at `shaders/rope.wgsl` for compute operations.
+pub async fn rope(
+    engine: &ComputeEngine,
+    input: &wgpu::Buffer,
+    seq_len: u32,
+    head_dim: u32,
+    position: u32,
+    theta_base: f32,
+) -> Result<wgpu::Buffer> {
+    let device = engine.device();
+    let queue = engine.queue();
+
+    // Load the shader
+    let shader_source = include_str!("shaders/rope.wgsl");
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("rope_shader"),
+        source: wgpu::ShaderSource::Wgsl(shader_source.into()),
+    });
+
+    // Create output buffer
+    let output_size = (seq_len * head_dim * std::mem::size_of::<f32>() as u32) as u64;
+    let output = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("rope_output"),
+        size: output_size,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+
+    // Create uniforms buffer
+    let uniforms = RopeUniforms {
+        seq_len,
+        head_dim,
+        position,
+        theta_base,
+    };
+    let uniforms_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("rope_uniforms"),
+        contents: bytemuck::cast_slice(&[uniforms]),
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+    });
+
+    // Create bind group layout
+    let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("rope_bind_group_layout"),
+        entries: &[
+            // Input (storage, read-only)
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            // Output (storage, read-write)
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: false },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            // Uniforms
+            wgpu::BindGroupLayoutEntry {
+                binding: 2,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+        ],
+    });
+
+    // Create bind group
+    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("rope_bind_group"),
+        layout: &bind_group_layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: input.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: output.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: uniforms_buffer.as_entire_binding(),
+            },
+        ],
+    });
+
+    // Create compute pipeline
+    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("rope_pipeline_layout"),
+        bind_group_layouts: &[Some(&bind_group_layout)],
+        immediate_size: Default::default(),
+    });
+
+    let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        label: Some("rope_pipeline"),
+        layout: Some(&pipeline_layout),
+        module: &shader,
+        entry_point: Some("main"),
+        compilation_options: Default::default(),
+        cache: None,
+    });
+
+    // Create command encoder and dispatch
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+        label: Some("rope_encoder"),
+    });
+
+    {
+        let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            label: Some("rope_pass"),
+            timestamp_writes: None,
+        });
+
+        compute_pass.set_pipeline(&pipeline);
+        compute_pass.set_bind_group(0, &bind_group, &[]);
+
+        // Calculate workgroup dispatch size (256 threads per workgroup)
+        // Each thread processes one pair, so total pairs = (seq_len * head_dim) / 2
+        let total_pairs = (seq_len * head_dim) / 2;
+        let workgroup_count = (total_pairs + 255) / 256;
+        compute_pass.dispatch_workgroups(workgroup_count, 1, 1);
+    }
+
+    // Submit commands
+    queue.submit(Some(encoder.finish()));
+
+    // Wait for completion
+    let _ = device.poll(wgpu::PollType::wait_indefinitely());
+
+    Ok(output)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1196,5 +1371,281 @@ mod tests {
 
         println!("✓ RMSNorm (512 elements) test passed!");
         println!("  RMS value: {}", rms);
+    }
+
+    #[tokio::test]
+    async fn test_rope_basic() {
+        // Skip test if no GPU available
+        let engine = match ComputeEngine::new().await {
+            Ok(e) => e,
+            Err(_) => {
+                println!("Skipping test: No GPU available");
+                return;
+            }
+        };
+
+        // Test RoPE with a simple case: 1 token, 4-dim head
+        // Input: [1.0, 0.0, 1.0, 0.0]
+        // Position: 0
+        // theta_base: 10000.0
+        
+        let seq_len = 1;
+        let head_dim = 4;
+        let position = 0;
+        let theta_base = 10000.0;
+        
+        let input: Vec<f32> = vec![1.0, 0.0, 1.0, 0.0];
+        
+        // For position 0, the rotation angles should be 0
+        // So output should be same as input (no rotation)
+        let expected = input.clone();
+        
+        // Upload to GPU
+        let input_buffer = engine.device().create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("test_rope_input"),
+            contents: bytemuck::cast_slice(&input),
+            usage: wgpu::BufferUsages::STORAGE,
+        });
+        
+        // Run RoPE
+        let output = rope(&engine, &input_buffer, seq_len, head_dim, position, theta_base)
+            .await
+            .expect("rope failed");
+        
+        // Read back result
+        let result = read_buffer_to_vec(&engine, &output, (input.len() * 4) as u64).await;
+        
+        // Check results
+        assert_eq!(result.len(), expected.len());
+        for (i, (&res, &exp)) in result.iter().zip(expected.iter()).enumerate() {
+            assert!(
+                (res - exp).abs() < 1e-4,
+                "Mismatch at index {}: expected {}, got {}",
+                i,
+                exp,
+                res
+            );
+        }
+        
+        println!("✓ RoPE basic test passed!");
+        println!("  Input:    {:?}", input);
+        println!("  Output:   {:?}", result);
+    }
+
+    #[tokio::test]
+    async fn test_rope_with_position() {
+        // Skip test if no GPU available
+        let engine = match ComputeEngine::new().await {
+            Ok(e) => e,
+            Err(_) => {
+                println!("Skipping test: No GPU available");
+                return;
+            }
+        };
+
+        // Test RoPE with non-zero position
+        let seq_len = 1;
+        let head_dim = 2;  // Just one pair for simplicity
+        let position = 1;
+        let theta_base = 10000.0;
+        
+        // Input: [1.0, 0.0]
+        let input: Vec<f32> = vec![1.0, 0.0];
+        
+        // Calculate expected output manually
+        // theta = 10000^(0/2) = 1.0
+        // angle = position / theta = 1.0 / 1.0 = 1.0 radian
+        // cos(1.0) ≈ 0.5403
+        // sin(1.0) ≈ 0.8415
+        // output[0] = 1.0 * cos(1.0) - 0.0 * sin(1.0) = 0.5403
+        // output[1] = 1.0 * sin(1.0) + 0.0 * cos(1.0) = 0.8415
+        let expected: Vec<f32> = vec![0.5403023, 0.84147096];
+        
+        // Upload to GPU
+        let input_buffer = engine.device().create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("test_rope_position_input"),
+            contents: bytemuck::cast_slice(&input),
+            usage: wgpu::BufferUsages::STORAGE,
+        });
+        
+        // Run RoPE
+        let output = rope(&engine, &input_buffer, seq_len, head_dim, position, theta_base)
+            .await
+            .expect("rope failed");
+        
+        // Read back result
+        let result = read_buffer_to_vec(&engine, &output, (input.len() * 4) as u64).await;
+        
+        // Check results
+        assert_eq!(result.len(), expected.len());
+        for (i, (&res, &exp)) in result.iter().zip(expected.iter()).enumerate() {
+            assert!(
+                (res - exp).abs() < 1e-4,
+                "Mismatch at index {}: expected {}, got {}",
+                i,
+                exp,
+                res
+            );
+        }
+        
+        println!("✓ RoPE with position test passed!");
+        println!("  Input:    {:?}", input);
+        println!("  Output:   {:?}", result);
+        println!("  Expected: {:?}", expected);
+    }
+
+    #[tokio::test]
+    async fn test_kv_cache_initialization() {
+        use super::super::cache::KVCache;
+        
+        // Skip test if no GPU available
+        let engine = match ComputeEngine::new().await {
+            Ok(e) => e,
+            Err(_) => {
+                println!("Skipping test: No GPU available");
+                return;
+            }
+        };
+
+        // Create a KV cache for 1024 tokens, 8 heads, 64 dim per head
+        let max_seq_len = 1024;
+        let num_heads = 8;
+        let head_dim = 64;
+        
+        let cache = KVCache::new(&engine, max_seq_len, num_heads, head_dim)
+            .expect("Failed to create KV cache");
+        
+        // Verify dimensions
+        assert_eq!(cache.max_seq_len(), max_seq_len);
+        assert_eq!(cache.num_heads(), num_heads);
+        assert_eq!(cache.head_dim(), head_dim);
+        assert_eq!(cache.current_position(), 0);
+        
+        println!("✓ KV Cache initialization test passed!");
+        println!("  Max sequence length: {}", max_seq_len);
+        println!("  Number of heads: {}", num_heads);
+        println!("  Head dimension: {}", head_dim);
+        println!("  Total cache size: {:.2} MB", 
+            (max_seq_len * num_heads * head_dim * 2 * 4) as f64 / (1024.0 * 1024.0));
+    }
+
+    #[tokio::test]
+    async fn test_kv_cache_update() {
+        use super::super::cache::KVCache;
+        
+        // Skip test if no GPU available
+        let engine = match ComputeEngine::new().await {
+            Ok(e) => e,
+            Err(_) => {
+                println!("Skipping test: No GPU available");
+                return;
+            }
+        };
+
+        // Create a small KV cache for testing
+        let max_seq_len = 16;
+        let num_heads = 2;
+        let head_dim = 4;
+        
+        let mut cache = KVCache::new(&engine, max_seq_len, num_heads, head_dim)
+            .expect("Failed to create KV cache");
+        
+        // Create fake Key and Value tensors for one token
+        // Shape: [num_heads * head_dim] = [2 * 4] = 8 elements
+        let new_key: Vec<f32> = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0];
+        let new_value: Vec<f32> = vec![0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8];
+        
+        // Upload to GPU
+        let key_buffer = engine.device().create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("test_new_key"),
+            contents: bytemuck::cast_slice(&new_key),
+            usage: wgpu::BufferUsages::STORAGE,
+        });
+        
+        let value_buffer = engine.device().create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("test_new_value"),
+            contents: bytemuck::cast_slice(&new_value),
+            usage: wgpu::BufferUsages::STORAGE,
+        });
+        
+        // Update cache at position 0
+        cache.update(&engine, &key_buffer, &value_buffer, 0)
+            .await
+            .expect("Failed to update cache");
+        
+        // Verify position was updated
+        assert_eq!(cache.current_position(), 1);
+        
+        // Read back the key cache to verify it was written correctly
+        let cache_size = (max_seq_len * num_heads * head_dim * 4) as u64;
+        let key_cache_data = read_buffer_to_vec(&engine, cache.key_cache(), cache_size).await;
+        
+        // The first 8 elements should match our new_key
+        for i in 0..8 {
+            assert!(
+                (key_cache_data[i] - new_key[i]).abs() < 1e-5,
+                "Key cache mismatch at index {}: expected {}, got {}",
+                i,
+                new_key[i],
+                key_cache_data[i]
+            );
+        }
+        
+        println!("✓ KV Cache update test passed!");
+        println!("  Updated position 0 successfully");
+        println!("  Current position: {}", cache.current_position());
+    }
+
+    #[tokio::test]
+    async fn test_rope_and_cache_integration() {
+        use super::super::cache::KVCache;
+        
+        // Skip test if no GPU available
+        let engine = match ComputeEngine::new().await {
+            Ok(e) => e,
+            Err(_) => {
+                println!("Skipping test: No GPU available");
+                return;
+            }
+        };
+
+        // Integration test: RoPE + KV Cache
+        let max_seq_len = 1024;
+        let num_heads = 8;
+        let head_dim = 64;
+        let position = 0;
+        
+        // Create KV cache
+        let mut cache = KVCache::new(&engine, max_seq_len, num_heads, head_dim)
+            .expect("Failed to create KV cache");
+        
+        // Create a fake Query/Key tensor (num_heads * head_dim = 512 elements)
+        let input: Vec<f32> = (0..512).map(|i| (i as f32) / 100.0).collect();
+        
+        // Upload to GPU
+        let input_buffer = engine.device().create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("test_integration_input"),
+            contents: bytemuck::cast_slice(&input),
+            usage: wgpu::BufferUsages::STORAGE,
+        });
+        
+        // Apply RoPE to get rotated embeddings
+        let rope_output = rope(&engine, &input_buffer, 1, num_heads * head_dim, position, 10000.0)
+            .await
+            .expect("rope failed");
+        
+        // Store in cache at position 0
+        // Note: We're using the same buffer for both key and value for simplicity
+        cache.update(&engine, &rope_output, &rope_output, position)
+            .await
+            .expect("Failed to update cache");
+        
+        // Verify cache was updated
+        assert_eq!(cache.current_position(), 1);
+        
+        println!("✓ RoPE + KV Cache integration test passed!");
+        println!("  Applied RoPE to {} elements", input.len());
+        println!("  Stored in cache at position {}", position);
+        println!("  Cache current position: {}", cache.current_position());
     }
 }
