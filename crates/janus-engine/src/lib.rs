@@ -9,19 +9,20 @@
 
 pub mod compute;
 pub mod formats;
-pub mod gguf;
 pub mod loader;
 pub mod model;
 
 // Re-export commonly used types
 pub use compute::{Buffer, BufferUsage, ComputeBackend, ComputeEngine, DeviceInfo, KVCache};
 pub use formats::{
-    gguf::GGUFFile as GGUFLoader,
-    safetensors::SafetensorsFile as SafetensorsLoader,
+    GGMLType, GGUFError, GGUFFile, GGUFMetadata, MetadataValue, SafetensorsFile, TensorInfo,
     FormatError, ModelLoader, TensorData, TensorDType,
 };
-pub use gguf::{GGMLType, GGUFFile, MetadataValue, TensorInfo};
 pub use model::{
     LMHead, LMHeadConfig, Model, ModelConfig, Sampler, SamplerConfig, Tokenizer,
     TokenizerError, TransformerBlock, TransformerBlockConfig,
 };
+
+// Convenience aliases for model loaders
+pub use formats::GGUFFile as GGUFLoader;
+pub use formats::SafetensorsFile as SafetensorsLoader;

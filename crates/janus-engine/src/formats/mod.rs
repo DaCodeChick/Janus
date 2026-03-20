@@ -79,6 +79,12 @@
 pub mod gguf;
 pub mod safetensors;
 
+// Re-export GGUF types for convenience
+pub use gguf::{GGMLType, GGUFError, GGUFFile, GGUFMetadata, MetadataValue, TensorInfo};
+
+// Re-export Safetensors types
+pub use safetensors::SafetensorsFile;
+
 use std::collections::HashMap;
 use thiserror::Error;
 

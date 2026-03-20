@@ -1,24 +1,47 @@
-//! GGUF file format adapter for ModelLoader trait
+//! GGUF (GPT-Generated Unified Format) file format support
 //!
-//! This module wraps the existing GGUF parser to implement the ModelLoader trait.
+//! This module provides complete GGUF file parsing with ModelLoader trait implementation.
+//! GGUF is the format used by llama.cpp and many quantized LLM models.
 
-use super::{FormatError, ModelLoader, Result, TensorDType, TensorData};
-use crate::gguf::{GGMLType, GGUFFile as GGUFParser, MetadataValue};
+mod error;
+mod parser;
+mod types;
+
+pub use error::{GGUFError, Result as GGUFResult};
+pub use parser::GGUFParser;
+pub use types::{GGMLType, GGUFHeader, GGUFMetadata, MetadataValue, MetadataValueType, TensorInfo};
+
+use super::{FormatError, ModelLoader, Result, TensorData, TensorDType};
 use std::collections::HashMap;
 use std::path::Path;
 
 /// GGUF file loader implementing ModelLoader trait
 pub struct GGUFFile {
-    inner: GGUFParser,
+    parser: GGUFParser,
 }
 
 impl GGUFFile {
     /// Load a GGUF file from disk using memory mapping
     pub fn from_file<P: AsRef<Path>>(path: P) -> Result<Self> {
-        let inner = GGUFParser::open(path)
+        let parser = GGUFParser::open(path)
             .map_err(|e| FormatError::ParseError(format!("GGUF parse error: {}", e)))?;
 
-        Ok(Self { inner })
+        Ok(Self { parser })
+    }
+
+    /// Get direct access to the underlying GGUF parser
+    pub fn parser(&self) -> &GGUFParser {
+        &self.parser
+    }
+
+    /// Get GGUF-specific metadata
+    pub fn gguf_metadata(&self) -> &GGUFMetadata {
+        self.parser.metadata()
+    }
+
+    /// Get tensor information with GGUF-specific details
+    pub fn gguf_tensors(&self) -> &[TensorInfo] {
+        self.parser.tensors()
     }
 
     /// Convert GGML type to TensorDType
@@ -66,12 +89,16 @@ impl ModelLoader for GGUFFile {
     fn tensors(&self) -> Result<HashMap<String, TensorData<'_>>> {
         let mut result = HashMap::new();
 
-        for tensor_info in self.inner.tensors() {
+        for tensor_info in self.parser.tensors() {
             let dtype = Self::ggml_to_dtype(tensor_info.ggml_type);
-            let data = self.inner.get_tensor_data(tensor_info);
+            let data = self.parser.get_tensor_data(tensor_info);
 
             // Convert Vec<u64> to Vec<usize> for dimensions
-            let shape: Vec<usize> = tensor_info.dimensions.iter().map(|&d| d as usize).collect();
+            let shape: Vec<usize> = tensor_info
+                .dimensions
+                .iter()
+                .map(|&d| d as usize)
+                .collect();
 
             let tensor = TensorData {
                 name: tensor_info.name.clone(),
@@ -87,20 +114,24 @@ impl ModelLoader for GGUFFile {
     }
 
     fn get_metadata(&self, key: &str) -> Option<String> {
-        self.inner
+        self.parser
             .get_metadata(key)
             .map(Self::metadata_value_to_string)
     }
 
     fn metadata_keys(&self) -> Vec<String> {
-        self.inner.metadata().metadata.keys().cloned().collect()
+        self.parser
+            .metadata()
+            .metadata
+            .keys()
+            .cloned()
+            .collect()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::gguf::GGMLType;
 
     #[test]
     fn test_ggml_dtype_conversion() {

@@ -18,13 +18,13 @@ const SUPPORTED_VERSION_MAX: u32 = 3;
 const DEFAULT_ALIGNMENT: u64 = 32;
 
 /// GGUF file handle with memory-mapped data
-pub struct GGUFFile {
+pub struct GGUFParser {
     mmap: Mmap,
     metadata: GGUFMetadata,
     data_offset: usize,
 }
 
-impl GGUFFile {
+impl GGUFParser {
     /// Open and parse a GGUF file
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
         let file = File::open(path)?;
@@ -408,7 +408,7 @@ mod tests {
         data.extend_from_slice(&0u64.to_le_bytes()); // Tensor count: 0
         data.extend_from_slice(&0u64.to_le_bytes()); // Metadata KV count: 0
 
-        let result = GGUFFile::parse_header(&data);
+        let result = GGUFParser::parse_header(&data);
         assert!(result.is_ok());
 
         let (metadata, _offset) = result.unwrap();
@@ -467,7 +467,7 @@ mod tests {
         data.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]); // Invalid magic
         data.extend_from_slice(&2u32.to_le_bytes()); // Version: 2
 
-        let result = GGUFFile::parse_header(&data);
+        let result = GGUFParser::parse_header(&data);
         assert!(matches!(result, Err(GGUFError::InvalidMagic(_))));
     }
 
@@ -479,7 +479,7 @@ mod tests {
         data.extend_from_slice(&0u64.to_le_bytes()); // Tensor count: 0
         data.extend_from_slice(&0u64.to_le_bytes()); // Metadata KV count: 0
 
-        let result = GGUFFile::parse_header(&data);
+        let result = GGUFParser::parse_header(&data);
         assert!(matches!(result, Err(GGUFError::UnsupportedVersion(1))));
     }
 
@@ -507,7 +507,7 @@ mod tests {
         data.extend_from_slice(&4u32.to_le_bytes()); // Type: UInt32
         data.extend_from_slice(&123u32.to_le_bytes()); // Value: 123
 
-        let result = GGUFFile::parse_header(&data);
+        let result = GGUFParser::parse_header(&data);
         assert!(result.is_ok());
 
         let (metadata, _offset) = result.unwrap();
@@ -515,7 +515,7 @@ mod tests {
         assert!(metadata.metadata.contains_key("test.key"));
 
         match metadata.metadata.get("test.key").unwrap() {
-            MetadataValue::UInt32(val) => assert_eq!(*val, 123),
+            MetadataValue::UInt32(val) => assert_eq!(val, &123),
             _ => panic!("Expected UInt32 metadata value"),
         }
     }
