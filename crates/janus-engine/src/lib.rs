@@ -16,6 +16,6 @@ pub mod model;
 pub use compute::{Buffer, BufferUsage, ComputeBackend, ComputeEngine, DeviceInfo, KVCache};
 pub use gguf::{GGMLType, GGUFFile, MetadataValue, TensorInfo};
 pub use model::{
-    LMHead, LMHeadConfig, Sampler, SamplerConfig, Tokenizer, TokenizerError, TransformerBlock,
-    TransformerBlockConfig,
+    LMHead, LMHeadConfig, Model, ModelConfig, Sampler, SamplerConfig, Tokenizer,
+    TokenizerError, TransformerBlock, TransformerBlockConfig,
 };

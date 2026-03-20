@@ -26,6 +26,9 @@ pub enum ComputeError {
 
     #[error("Invalid tensor dimensions: {0}")]
     InvalidDimensions(String),
+
+    #[error("Other error: {0}")]
+    Other(String),
 }
 
 /// Result type for compute operations
