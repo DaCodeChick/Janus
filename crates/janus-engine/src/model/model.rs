@@ -474,7 +474,7 @@ impl Model {
         // Start generation (decode phase)
         tracing::info!("Generation phase: generating up to {} tokens", max_tokens);
         let mut generated_tokens = Vec::new();
-        let mut generated_text = String::new();
+        let mut printed_len = 0;
 
         // Print prompt
         print!("{}", prompt);
@@ -492,8 +492,8 @@ impl Model {
             // Step C-E: Forward pass to get logits
             let logits = self.forward(last_token, seq_pos).await?;
 
-            // Step F: Sample next token
-            let next_token = self.sampler.sample(&self.engine, &logits).await?;
+            // Step F: Sample next token (pass context for repetition penalty)
+            let next_token = self.sampler.sample(&self.engine, &logits, &generated_tokens).await?;
             
             tracing::debug!("Sampled token ID: {}", next_token);
 
@@ -505,18 +505,21 @@ impl Model {
                 }
             }
 
-            // Step G: Decode and print the token
-            let token_text = self
+            // Add token to generated sequence
+            generated_tokens.push(next_token);
+
+            // Step G: Decode entire sequence and print only new text (fixes SentencePiece space stripping)
+            let full_text = self
                 .tokenizer
-                .decode(next_token)
+                .decode_batch(&generated_tokens)
                 .map_err(|e| crate::compute::ComputeError::Other(format!("Detokenization failed: {}", e)))?;
 
-            // Print token immediately (streaming output)
-            print!("{}", token_text);
-            std::io::Write::flush(&mut std::io::stdout()).ok();
-
-            generated_tokens.push(next_token);
-            generated_text.push_str(&token_text);
+            // Print only the newly generated text (streaming output)
+            if full_text.len() > printed_len {
+                print!("{}", &full_text[printed_len..]);
+                std::io::Write::flush(&mut std::io::stdout()).ok();
+                printed_len = full_text.len();
+            }
 
             // Update for next iteration
             last_token = next_token;
@@ -525,6 +528,12 @@ impl Model {
 
         // Final newline
         println!();
+
+        // Decode final text from all generated tokens
+        let generated_text = self
+            .tokenizer
+            .decode_batch(&generated_tokens)
+            .map_err(|e| crate::compute::ComputeError::Other(format!("Final detokenization failed: {}", e)))?;
 
         tracing::info!(
             "Generation complete: {} tokens generated",

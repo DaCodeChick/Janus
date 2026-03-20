@@ -64,26 +64,32 @@ impl Sampler {
     ///
     /// This function:
     /// 1. Reads the logits buffer from GPU to CPU
-    /// 2. Applies the sampling strategy (currently greedy/argmax)
-    /// 3. Returns the selected token ID
+    /// 2. Applies repetition penalty based on context
+    /// 3. Applies the sampling strategy (currently greedy/argmax)
+    /// 4. Returns the selected token ID
     ///
     /// # Arguments
     /// * `engine` - The compute engine for GPU operations
     /// * `logits_buffer` - GPU buffer containing logits [vocab_size] floats
+    /// * `context` - Previously generated tokens for repetition penalty
     ///
     /// # Returns
     /// The selected token ID (0 to vocab_size - 1)
     ///
     /// # Implementation Note
-    /// Currently implements greedy decoding (argmax). Future versions will
-    /// support temperature sampling, top-k, and top-p.
+    /// Currently implements greedy decoding (argmax) with repetition penalty.
+    /// Future versions will support temperature sampling, top-k, and top-p.
     pub async fn sample(
         &self,
         engine: &ComputeEngine,
         logits_buffer: &wgpu::Buffer,
+        context: &[u32],
     ) -> Result<u32> {
         // Read logits from GPU to CPU
-        let logits = self.read_logits_from_gpu(engine, logits_buffer).await?;
+        let mut logits = self.read_logits_from_gpu(engine, logits_buffer).await?;
+
+        // Apply repetition penalty to prevent infinite loops
+        self.apply_repetition_penalty(&mut logits, context);
 
         // Apply sampling strategy
         let token_id = if self.config.temperature == 0.0 {
@@ -159,6 +165,35 @@ impl Sampler {
         staging_buffer.unmap();
 
         Ok(logits)
+    }
+
+    /// Apply repetition penalty to logits to prevent infinite loops
+    ///
+    /// This penalizes tokens that have already been generated in the context,
+    /// reducing the likelihood of repetitive output.
+    ///
+    /// # Arguments
+    /// * `logits` - Mutable slice of logit values to modify
+    /// * `context` - Previously generated token IDs
+    ///
+    /// # Implementation
+    /// For each token in the context:
+    /// - If its logit is positive, divide by penalty (reduces probability)
+    /// - If its logit is negative, multiply by penalty (makes it more negative)
+    fn apply_repetition_penalty(&self, logits: &mut [f32], context: &[u32]) {
+        let rep_penalty = 1.15_f32;
+        
+        for &token_id in context {
+            let idx = token_id as usize;
+            if idx < logits.len() {
+                let logit = &mut logits[idx];
+                if *logit > 0.0 {
+                    *logit /= rep_penalty;
+                } else {
+                    *logit *= rep_penalty;
+                }
+            }
+        }
     }
 
     /// Find the index of the maximum value (argmax)
