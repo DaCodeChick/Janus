@@ -452,3 +452,161 @@ pub async fn compute_attention(
 
     Ok(output)
 }
+
+/// Compute scaled dot-product attention - Static computation graph version
+///
+/// Attention(Q, K, V) = softmax(Q * K^T / sqrt(d)) * V
+///
+/// # Arguments
+/// * `engine` - The compute engine containing GPU device and queue
+/// * `encoder` - Shared command encoder for recording GPU operations
+/// * `query` - GPU buffer containing query tensor [num_heads * head_dim]
+/// * `key_cache` - GPU buffer containing all cached keys
+/// * `value_cache` - GPU buffer containing all cached values
+/// * `output` - Pre-allocated output buffer [num_heads * head_dim]
+/// * `layer_idx` - The transformer layer index (for cache segmentation)
+/// * `seq_len` - Current sequence length (number of tokens in cache)
+/// * `max_seq_len` - Maximum sequence length supported by cache
+/// * `num_heads` - Number of query attention heads
+/// * `num_kv_heads` - Number of key-value attention heads (for GQA)
+/// * `head_dim` - Dimension of each attention head
+///
+/// # Note
+/// This function records commands to the encoder but does NOT submit them.
+/// The caller is responsible for submitting the encoder.
+pub fn compute_attention_static(
+    engine: &ComputeEngine,
+    encoder: &mut wgpu::CommandEncoder,
+    query: &wgpu::Buffer,
+    key_cache: &wgpu::Buffer,
+    value_cache: &wgpu::Buffer,
+    output: &wgpu::Buffer,
+    layer_idx: u32,
+    seq_len: u32,
+    max_seq_len: u32,
+    num_heads: u32,
+    num_kv_heads: u32,
+    head_dim: u32,
+) -> Result<()> {
+    let device = engine.device();
+    let scale = 1.0 / (head_dim as f32).sqrt();
+
+    // Load shaders
+    let attention_shader_source = include_str!("../shaders/attention.wgsl");
+    let softmax_shader_source = include_str!("../shaders/softmax.wgsl");
+    let attention_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("attention_shader"),
+        source: wgpu::ShaderSource::Wgsl(attention_shader_source.into()),
+    });
+    let softmax_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("softmax_shader"),
+        source: wgpu::ShaderSource::Wgsl(softmax_shader_source.into()),
+    });
+
+    // Create intermediate buffers (TODO: these should eventually be pre-allocated)
+    let scores_size = (num_heads * seq_len * std::mem::size_of::<f32>() as u32) as u64;
+    let scores = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("attention_scores"),
+        size: scores_size,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+        mapped_at_creation: false,
+    });
+    let probs = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("attention_probs"),
+        size: scores_size,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+        mapped_at_creation: false,
+    });
+
+    // Create uniforms
+    let attention_uniforms = AttentionUniforms {
+        seq_len, num_heads, num_kv_heads, head_dim, scale, layer_idx, max_seq_len, _pad: 0,
+    };
+    let attention_uniforms_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("attention_uniforms"),
+        contents: bytemuck::cast_slice(&[attention_uniforms]),
+        usage: wgpu::BufferUsages::UNIFORM,
+    });
+    let softmax_uniforms = SoftmaxUniforms {
+        seq_len, num_heads, batch_size: num_heads, _pad: 0,
+    };
+    let softmax_uniforms_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("softmax_uniforms"),
+        contents: bytemuck::cast_slice(&[softmax_uniforms]),
+        usage: wgpu::BufferUsages::UNIFORM,
+    });
+
+    // === Step 1: QK scores ===
+    let qk_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("qk_bind_group_layout"),
+        entries: &[
+            wgpu::BindGroupLayoutEntry { binding: 0, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None }, count: None },
+            wgpu::BindGroupLayoutEntry { binding: 1, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None }, count: None },
+            wgpu::BindGroupLayoutEntry { binding: 2, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: false }, has_dynamic_offset: false, min_binding_size: None }, count: None },
+            wgpu::BindGroupLayoutEntry { binding: 3, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None }, count: None },
+        ],
+    });
+    let qk_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("qk_bind_group"),
+        layout: &qk_bind_group_layout,
+        entries: &[
+            wgpu::BindGroupEntry { binding: 0, resource: query.as_entire_binding() },
+            wgpu::BindGroupEntry { binding: 1, resource: key_cache.as_entire_binding() },
+            wgpu::BindGroupEntry { binding: 2, resource: scores.as_entire_binding() },
+            wgpu::BindGroupEntry { binding: 3, resource: attention_uniforms_buffer.as_entire_binding() },
+        ],
+    });
+    let qk_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("qk_pipeline_layout"), bind_group_layouts: &[Some(&qk_bind_group_layout)], immediate_size: Default::default() });
+    let qk_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor { label: Some("qk_pipeline"), layout: Some(&qk_pipeline_layout), module: &attention_shader, entry_point: Some("compute_qk_scores"), compilation_options: Default::default(), cache: None });
+
+    // === Step 2: Softmax ===
+    let softmax_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("softmax_bind_group_layout"),
+        entries: &[
+            wgpu::BindGroupLayoutEntry { binding: 0, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None }, count: None },
+            wgpu::BindGroupLayoutEntry { binding: 1, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: false }, has_dynamic_offset: false, min_binding_size: None }, count: None },
+            wgpu::BindGroupLayoutEntry { binding: 2, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None }, count: None },
+        ],
+    });
+    let softmax_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("softmax_bind_group"),
+        layout: &softmax_bind_group_layout,
+        entries: &[
+            wgpu::BindGroupEntry { binding: 0, resource: scores.as_entire_binding() },
+            wgpu::BindGroupEntry { binding: 1, resource: probs.as_entire_binding() },
+            wgpu::BindGroupEntry { binding: 2, resource: softmax_uniforms_buffer.as_entire_binding() },
+        ],
+    });
+    let softmax_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("softmax_pipeline_layout"), bind_group_layouts: &[Some(&softmax_bind_group_layout)], immediate_size: Default::default() });
+    let softmax_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor { label: Some("softmax_pipeline"), layout: Some(&softmax_pipeline_layout), module: &softmax_shader, entry_point: Some("main"), compilation_options: Default::default(), cache: None });
+
+    // === Step 3: Apply attention ===
+    let apply_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("apply_bind_group_layout"),
+        entries: &[
+            wgpu::BindGroupLayoutEntry { binding: 0, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None }, count: None },
+            wgpu::BindGroupLayoutEntry { binding: 1, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None }, count: None },
+            wgpu::BindGroupLayoutEntry { binding: 2, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: false }, has_dynamic_offset: false, min_binding_size: None }, count: None },
+            wgpu::BindGroupLayoutEntry { binding: 3, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None }, count: None },
+        ],
+    });
+    let apply_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("apply_bind_group"),
+        layout: &apply_bind_group_layout,
+        entries: &[
+            wgpu::BindGroupEntry { binding: 0, resource: probs.as_entire_binding() },
+            wgpu::BindGroupEntry { binding: 1, resource: value_cache.as_entire_binding() },
+            wgpu::BindGroupEntry { binding: 2, resource: output.as_entire_binding() },
+            wgpu::BindGroupEntry { binding: 3, resource: attention_uniforms_buffer.as_entire_binding() },
+        ],
+    });
+    let apply_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("apply_pipeline_layout"), bind_group_layouts: &[Some(&apply_bind_group_layout)], immediate_size: Default::default() });
+    let apply_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor { label: Some("apply_pipeline"), layout: Some(&apply_pipeline_layout), module: &attention_shader, entry_point: Some("apply_attention"), compilation_options: Default::default(), cache: None });
+
+    // Record all three passes
+    { let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("qk_pass"), timestamp_writes: None }); compute_pass.set_pipeline(&qk_pipeline); compute_pass.set_bind_group(0, &qk_bind_group, &[]); compute_pass.dispatch_workgroups(num_heads, 1, 1); }
+    { let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("softmax_pass"), timestamp_writes: None }); compute_pass.set_pipeline(&softmax_pipeline); compute_pass.set_bind_group(0, &softmax_bind_group, &[]); compute_pass.dispatch_workgroups(num_heads, 1, 1); }
+    { let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("apply_pass"), timestamp_writes: None }); compute_pass.set_pipeline(&apply_pipeline); compute_pass.set_bind_group(0, &apply_bind_group, &[]); let workgroup_count = (num_heads * head_dim + 255) / 256; compute_pass.dispatch_workgroups(workgroup_count, 1, 1); }
+
+    Ok(())
+}

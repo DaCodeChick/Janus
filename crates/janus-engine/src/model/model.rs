@@ -60,7 +60,7 @@
 //! ```
 
 use crate::compute::cache::KVCache;
-use crate::compute::ops::{gemm, rmsnorm};
+use crate::compute::ops::{gemm_static, rmsnorm_static};
 use crate::compute::{ComputeEngine, Result};
 use crate::model::{block::TransformerBlock, sampler::Sampler, tokenizer::Tokenizer};
 use wgpu::Buffer;
@@ -96,6 +96,7 @@ pub struct ModelConfig {
 /// - Output projection (LM head)
 /// - KV cache for efficient generation
 /// - Tokenizer and sampler
+/// - Pre-allocated scratch buffers for static computation graph
 pub struct Model {
     /// Configuration
     config: ModelConfig,
@@ -123,6 +124,53 @@ pub struct Model {
 
     /// KV cache for efficient autoregressive generation
     cache: KVCache,
+
+    // === Static Computation Graph: Pre-allocated Scratch Buffers ===
+    /// Hidden state buffer (ping-pong buffer A) [hidden_dim]
+    hidden_state: Buffer,
+
+    /// Alternate hidden state buffer (ping-pong buffer B) [hidden_dim]
+    hidden_state_alt: Buffer,
+
+    /// Query projection buffer [num_heads * head_dim]
+    q_buf: Buffer,
+
+    /// Key projection buffer [num_kv_heads * head_dim]
+    k_buf: Buffer,
+
+    /// Value projection buffer [num_kv_heads * head_dim]
+    v_buf: Buffer,
+
+    /// Attention output buffer [num_heads * head_dim]
+    attn_out_buf: Buffer,
+
+    /// Gate projection buffer [ffn_dim]
+    gate_buf: Buffer,
+
+    /// Up projection buffer [ffn_dim]
+    up_buf: Buffer,
+
+    /// Logits output buffer [vocab_size]
+    logits_buf: Buffer,
+
+    // === Additional scratch buffers for TransformerBlock ===
+    /// Normalized input buffer for attention [hidden_dim]
+    scratch_input_norm: Buffer,
+
+    /// Projection output buffer [hidden_dim]
+    scratch_proj_out: Buffer,
+
+    /// First residual connection buffer [hidden_dim]
+    scratch_hidden1: Buffer,
+
+    /// FFN normalized input buffer [hidden_dim]
+    scratch_ffn_norm: Buffer,
+
+    /// SwiGLU output buffer [ffn_dim]
+    scratch_swiglu: Buffer,
+
+    /// FFN output buffer [hidden_dim]
+    scratch_ffn_out: Buffer,
 }
 
 impl Model {
@@ -166,6 +214,133 @@ impl Model {
             config.head_dim,
         )?;
 
+        // === Static Computation Graph: Pre-allocate All Scratch Buffers ===
+        let device = engine.device();
+        let buffer_usage = wgpu::BufferUsages::STORAGE 
+            | wgpu::BufferUsages::COPY_SRC 
+            | wgpu::BufferUsages::COPY_DST;
+
+        tracing::info!("Allocating static computation graph scratch buffers...");
+
+        // Ping-pong hidden state buffers [hidden_dim]
+        let hidden_state = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("hidden_state"),
+            size: (config.hidden_dim * std::mem::size_of::<f32>() as u32) as u64,
+            usage: buffer_usage,
+            mapped_at_creation: false,
+        });
+
+        let hidden_state_alt = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("hidden_state_alt"),
+            size: (config.hidden_dim * std::mem::size_of::<f32>() as u32) as u64,
+            usage: buffer_usage,
+            mapped_at_creation: false,
+        });
+
+        // Attention projection buffers
+        let q_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("q_buf"),
+            size: (config.num_heads * config.head_dim * std::mem::size_of::<f32>() as u32) as u64,
+            usage: buffer_usage,
+            mapped_at_creation: false,
+        });
+
+        let k_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("k_buf"),
+            size: (config.num_kv_heads * config.head_dim * std::mem::size_of::<f32>() as u32) as u64,
+            usage: buffer_usage,
+            mapped_at_creation: false,
+        });
+
+        let v_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("v_buf"),
+            size: (config.num_kv_heads * config.head_dim * std::mem::size_of::<f32>() as u32) as u64,
+            usage: buffer_usage,
+            mapped_at_creation: false,
+        });
+
+        let attn_out_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("attn_out_buf"),
+            size: (config.num_heads * config.head_dim * std::mem::size_of::<f32>() as u32) as u64,
+            usage: buffer_usage,
+            mapped_at_creation: false,
+        });
+
+        // FFN projection buffers [ffn_dim]
+        let gate_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("gate_buf"),
+            size: (config.ffn_dim * std::mem::size_of::<f32>() as u32) as u64,
+            usage: buffer_usage,
+            mapped_at_creation: false,
+        });
+
+        let up_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("up_buf"),
+            size: (config.ffn_dim * std::mem::size_of::<f32>() as u32) as u64,
+            usage: buffer_usage,
+            mapped_at_creation: false,
+        });
+
+        // Logits output buffer [vocab_size]
+        let logits_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("logits_buf"),
+            size: (config.vocab_size * std::mem::size_of::<f32>() as u32) as u64,
+            usage: buffer_usage,
+            mapped_at_creation: false,
+        });
+
+        // Additional TransformerBlock scratch buffers [hidden_dim]
+        let scratch_input_norm = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("scratch_input_norm"),
+            size: (config.hidden_dim * std::mem::size_of::<f32>() as u32) as u64,
+            usage: buffer_usage,
+            mapped_at_creation: false,
+        });
+
+        let scratch_proj_out = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("scratch_proj_out"),
+            size: (config.hidden_dim * std::mem::size_of::<f32>() as u32) as u64,
+            usage: buffer_usage,
+            mapped_at_creation: false,
+        });
+
+        let scratch_hidden1 = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("scratch_hidden1"),
+            size: (config.hidden_dim * std::mem::size_of::<f32>() as u32) as u64,
+            usage: buffer_usage,
+            mapped_at_creation: false,
+        });
+
+        let scratch_ffn_norm = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("scratch_ffn_norm"),
+            size: (config.hidden_dim * std::mem::size_of::<f32>() as u32) as u64,
+            usage: buffer_usage,
+            mapped_at_creation: false,
+        });
+
+        // Additional TransformerBlock scratch buffers [ffn_dim]
+        let scratch_swiglu = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("scratch_swiglu"),
+            size: (config.ffn_dim * std::mem::size_of::<f32>() as u32) as u64,
+            usage: buffer_usage,
+            mapped_at_creation: false,
+        });
+
+        let scratch_ffn_out = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("scratch_ffn_out"),
+            size: (config.hidden_dim * std::mem::size_of::<f32>() as u32) as u64,
+            usage: buffer_usage,
+            mapped_at_creation: false,
+        });
+
+        tracing::info!(
+            "Allocated scratch buffers: hidden={}KB, q/k/v={}KB, ffn={}KB, logits={}KB",
+            (config.hidden_dim * 4 * 2) / 1024, // 2 hidden state buffers
+            ((config.num_heads + config.num_kv_heads * 2 + config.num_heads) * config.head_dim * 4) / 1024,
+            (config.ffn_dim * 4 * 2) / 1024, // gate + up
+            (config.vocab_size * 4) / 1024 // logits
+        );
+
         tracing::info!(
             "Initialized model: {} layers, hidden_dim={}, vocab_size={}",
             config.num_layers,
@@ -183,37 +358,49 @@ impl Model {
             output_norm_weight,
             lm_head_weight,
             cache,
+            hidden_state,
+            hidden_state_alt,
+            q_buf,
+            k_buf,
+            v_buf,
+            attn_out_buf,
+            gate_buf,
+            up_buf,
+            logits_buf,
+            scratch_input_norm,
+            scratch_proj_out,
+            scratch_hidden1,
+            scratch_ffn_norm,
+            scratch_swiglu,
+            scratch_ffn_out,
         })
     }
 
     /// Embed a single token ID into hidden state vector
     ///
-    /// This performs a lookup in the token embedding table and copies
-    /// the corresponding row to a new output buffer.
+    /// This performs a lookup in the token embedding table and writes
+    /// the corresponding row to the provided output buffer.
     ///
     /// # Arguments
+    /// * `encoder` - Shared command encoder for recording GPU operations
+    /// * `output_buffer` - Pre-allocated output buffer [hidden_dim]
     /// * `token_id` - Token ID to embed (0 to vocab_size - 1)
     ///
-    /// # Returns
-    /// GPU buffer containing the embedding vector [hidden_dim]
-    async fn embed_token(&self, token_id: u32) -> Result<Buffer> {
+    /// # Note
+    /// This function records commands to the encoder but does NOT submit them.
+    /// The caller is responsible for submitting the encoder.
+    fn embed_token(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        output_buffer: &wgpu::Buffer,
+        token_id: u32,
+    ) -> Result<()> {
         if token_id >= self.config.vocab_size {
             return Err(crate::compute::ComputeError::InvalidDimensions(format!(
                 "Token ID {} out of range [0, {})",
                 token_id, self.config.vocab_size
             )));
         }
-
-        // Create output buffer
-        let output = self
-            .engine
-            .device()
-            .create_buffer(&wgpu::BufferDescriptor {
-                label: Some("embedding_output"),
-                size: (self.config.hidden_dim * std::mem::size_of::<f32>() as u32) as u64,
-                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-                mapped_at_creation: false,
-            });
 
         // Create shader
         let shader = self
@@ -304,7 +491,7 @@ impl Model {
                     },
                     wgpu::BindGroupEntry {
                         binding: 2,
-                        resource: output.as_entire_binding(),
+                        resource: output_buffer.as_entire_binding(),
                     },
                 ],
             });
@@ -331,14 +518,7 @@ impl Model {
                 cache: None,
             });
 
-        // Execute
-        let mut encoder = self
-            .engine
-            .device()
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("embed_encoder"),
-            });
-
+        // Record compute pass
         {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("embed_pass"),
@@ -353,9 +533,7 @@ impl Model {
             pass.dispatch_workgroups(workgroups, 1, 1);
         }
 
-        self.engine.queue().submit(Some(encoder.finish()));
-
-        Ok(output)
+        Ok(())
     }
 
     /// Run forward pass for a single token
@@ -373,41 +551,116 @@ impl Model {
     /// # Returns
     /// Logits tensor [vocab_size] on GPU
     async fn forward(&mut self, token_id: u32, seq_pos: u32) -> Result<Buffer> {
-        // Step B: Embed token
-        let mut hidden = self.embed_token(token_id).await?;
+        // Create a single command encoder for the entire forward pass
+        let mut encoder = self
+            .engine
+            .device()
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("forward_pass_encoder"),
+            });
+        
+        // Step 1: Embed token into hidden_state buffer (ping-pong buffer A)
+        self.embed_token(&mut encoder, &self.hidden_state, token_id)?;
 
-        // Step C: Pass through all transformer blocks
+        // Step 2: Pass through all transformer blocks with ping-pong pattern
         for (layer_idx, block) in self.blocks.iter().enumerate() {
             tracing::debug!("Layer {}/{}: forward pass", layer_idx + 1, self.config.num_layers);
-            hidden = block
-                .forward(&self.engine, &hidden, &mut self.cache, layer_idx as u32, seq_pos)
-                .await?;
+            
+            // Determine input and output buffers (ping-pong between hidden_state and hidden_state_alt)
+            let (input_buf, output_buf) = if layer_idx % 2 == 0 {
+                (&self.hidden_state, &self.hidden_state_alt)
+            } else {
+                (&self.hidden_state_alt, &self.hidden_state)
+            };
+
+            // Execute transformer block (all operations batched into shared encoder)
+            block.forward_static(
+                &self.engine,
+                &mut encoder,
+                input_buf,
+                output_buf,
+                &self.scratch_input_norm,
+                &self.q_buf,
+                &self.k_buf,
+                &self.v_buf,
+                &self.attn_out_buf,
+                &self.scratch_proj_out,
+                &self.scratch_hidden1,
+                &self.scratch_ffn_norm,
+                &self.gate_buf,
+                &self.up_buf,
+                &self.scratch_swiglu,
+                &self.scratch_ffn_out,
+                &mut self.cache,
+                layer_idx as u32,
+                seq_pos,
+            )?;
         }
 
-        // Step D: Final RMSNorm
+        // Determine which buffer contains the final block output
+        let final_block_output = if self.config.num_layers % 2 == 0 {
+            &self.hidden_state
+        } else {
+            &self.hidden_state_alt
+        };
+
+        // Step 3: Final RMSNorm (reuse scratch_ffn_norm as temporary buffer)
         tracing::debug!("Applying final RMSNorm");
-        let normalized = rmsnorm(
+        rmsnorm_static(
             &self.engine,
-            &hidden,
+            &mut encoder,
+            final_block_output,
+            &self.scratch_ffn_norm,
             &self.output_norm_weight,
             self.config.hidden_dim,
             self.config.rms_norm_eps,
-        )
-        .await?;
+        )?;
 
-        // Step E: LM head projection [hidden_dim] x [hidden_dim, vocab_size] -> [vocab_size]
+        // Step 4: LM head projection: normalized output -> logits_buf
         tracing::debug!("Computing LM head projection");
-        let logits = gemm(
+        gemm_static(
             &self.engine,
-            &normalized,
+            &mut encoder,
+            &self.scratch_ffn_norm,
             &self.lm_head_weight,
+            &self.logits_buf,
             1,
             self.config.hidden_dim,
             self.config.vocab_size,
-        )
-        .await?;
+        )?;
 
-        Ok(logits)
+        // Step 5: Submit all operations in a SINGLE batch
+        tracing::debug!("Submitting forward pass (single GPU submission)");
+        self.engine.queue().submit(Some(encoder.finish()));
+
+        // TEMPORARY: Return a copy of logits_buf for compatibility with existing API
+        // TODO: Eventually modify the API to return &Buffer or ReadBuffer
+        let logits_copy = self
+            .engine
+            .device()
+            .create_buffer(&wgpu::BufferDescriptor {
+                label: Some("logits_copy"),
+                size: (self.config.vocab_size * std::mem::size_of::<f32>() as u32) as u64,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+        
+        let mut copy_encoder = self
+            .engine
+            .device()
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("copy_logits_encoder"),
+            });
+        copy_encoder.copy_buffer_to_buffer(
+            &self.logits_buf,
+            0,
+            &logits_copy,
+            0,
+            (self.config.vocab_size * std::mem::size_of::<f32>() as u32) as u64,
+        );
+        self.engine.queue().submit(Some(copy_encoder.finish()));
+
+        Ok(logits_copy)
     }
 
     /// Generate text autoregressively

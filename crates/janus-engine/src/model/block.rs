@@ -11,6 +11,8 @@ use crate::compute::cache::KVCache;
 use crate::compute::{ComputeEngine, Result};
 use crate::compute::ops::{
     add_tensors, compute_attention, elementwise_mul, gemm, rmsnorm, rope, silu,
+    add_tensors_static, compute_attention_static, elementwise_mul_static, 
+    gemm_static, rmsnorm_static, rope_static, silu_static,
 };
 
 /// Configuration for a transformer block
@@ -103,7 +105,271 @@ impl TransformerBlock {
         }
     }
 
-    /// Execute the forward pass of this transformer block
+    /// Execute the forward pass of this transformer block (STATIC VERSION)
+    ///
+    /// This is the static computation graph version that accepts pre-allocated
+    /// scratch buffers and records all operations to a shared command encoder.
+    ///
+    /// This implements the full transformer block computation pipeline:
+    /// 1. Attention block with residual:
+    ///    - RMSNorm(input)
+    ///    - Multi-head attention with RoPE
+    ///    - Residual connection: input + attention_output
+    /// 2. Feed-forward block with residual:
+    ///    - RMSNorm(hidden_1)
+    ///    - SwiGLU: SiLU(gate) * up
+    ///    - Down projection
+    ///    - Residual connection: hidden_1 + ffn_output
+    ///
+    /// # Arguments
+    /// * `engine` - The compute engine for GPU operations
+    /// * `encoder` - Shared command encoder to record operations to
+    /// * `input` - Input tensor [hidden_dim] for the current token
+    /// * `output` - Pre-allocated output buffer [hidden_dim]
+    /// * `scratch_input_norm` - Pre-allocated buffer for normalized input [hidden_dim]
+    /// * `scratch_q` - Pre-allocated buffer for Q projection [num_heads * head_dim]
+    /// * `scratch_k` - Pre-allocated buffer for K projection [num_kv_heads * head_dim]
+    /// * `scratch_v` - Pre-allocated buffer for V projection [num_kv_heads * head_dim]
+    /// * `scratch_attn_out` - Pre-allocated buffer for attention output [num_heads * head_dim]
+    /// * `scratch_proj_out` - Pre-allocated buffer for projection output [hidden_dim]
+    /// * `scratch_hidden1` - Pre-allocated buffer for first residual [hidden_dim]
+    /// * `scratch_ffn_norm` - Pre-allocated buffer for FFN normalized input [hidden_dim]
+    /// * `scratch_gate` - Pre-allocated buffer for gate projection [ffn_dim]
+    /// * `scratch_up` - Pre-allocated buffer for up projection [ffn_dim]
+    /// * `scratch_swiglu` - Pre-allocated buffer for SwiGLU output [ffn_dim]
+    /// * `scratch_ffn_out` - Pre-allocated buffer for FFN output [hidden_dim]
+    /// * `cache` - KV cache for storing/retrieving attention keys and values
+    /// * `layer_idx` - The transformer layer index (for cache segmentation)
+    /// * `seq_pos` - Position in the sequence (for RoPE)
+    ///
+    /// # Returns
+    /// Result indicating success or error
+    #[allow(clippy::too_many_arguments)]
+    pub fn forward_static(
+        &self,
+        engine: &ComputeEngine,
+        encoder: &mut wgpu::CommandEncoder,
+        input: &wgpu::Buffer,
+        output: &wgpu::Buffer,
+        scratch_input_norm: &wgpu::Buffer,
+        scratch_q: &wgpu::Buffer,
+        scratch_k: &wgpu::Buffer,
+        scratch_v: &wgpu::Buffer,
+        scratch_attn_out: &wgpu::Buffer,
+        scratch_proj_out: &wgpu::Buffer,
+        scratch_hidden1: &wgpu::Buffer,
+        scratch_ffn_norm: &wgpu::Buffer,
+        scratch_gate: &wgpu::Buffer,
+        scratch_up: &wgpu::Buffer,
+        scratch_swiglu: &wgpu::Buffer,
+        scratch_ffn_out: &wgpu::Buffer,
+        cache: &mut KVCache,
+        layer_idx: u32,
+        seq_pos: u32,
+    ) -> Result<()> {
+        // ===================================================================
+        // ATTENTION BLOCK
+        // ===================================================================
+
+        // Step 1: Input normalization
+        rmsnorm_static(
+            engine,
+            encoder,
+            input,
+            &self.attn_norm_weight,
+            scratch_input_norm,
+            self.config.hidden_dim,
+            self.config.rms_norm_eps,
+        )?;
+
+        // Step 2: Compute Q, K, V projections
+        // For GQA: Q uses full hidden_dim, but K/V use num_kv_heads * head_dim
+        let kv_dim = self.config.num_kv_heads * self.config.head_dim;
+        
+        gemm_static(
+            engine,
+            encoder,
+            scratch_input_norm,
+            &self.attn_q_weight,
+            scratch_q,
+            1,
+            self.config.hidden_dim,
+            self.config.hidden_dim,
+        )?;
+
+        gemm_static(
+            engine,
+            encoder,
+            scratch_input_norm,
+            &self.attn_k_weight,
+            scratch_k,
+            1,
+            self.config.hidden_dim,
+            kv_dim,
+        )?;
+
+        gemm_static(
+            engine,
+            encoder,
+            scratch_input_norm,
+            &self.attn_v_weight,
+            scratch_v,
+            1,
+            self.config.hidden_dim,
+            kv_dim,
+        )?;
+
+        // Step 3: Apply RoPE to Q and K (in-place)
+        rope_static(
+            engine,
+            encoder,
+            scratch_q,
+            scratch_q,  // in-place
+            self.config.num_heads,
+            self.config.head_dim,
+            seq_pos,
+            10000.0, // theta_base (standard value for LLaMA)
+        )?;
+
+        rope_static(
+            engine,
+            encoder,
+            scratch_k,
+            scratch_k,  // in-place
+            self.config.num_kv_heads,
+            self.config.head_dim,
+            seq_pos,
+            10000.0, // theta_base (standard value for LLaMA)
+        )?;
+
+        // Step 4: Update KV cache with new K and V
+        // Note: This may still require a sync point - will address in Phase 7
+        cache.update_static(engine, encoder, scratch_k, scratch_v, layer_idx, seq_pos)?;
+
+        // Step 5: Compute attention using cached K and V
+        let (key_cache, value_cache) = cache.buffers();
+        let current_seq_len = seq_pos + 1; // Sequence length including current token
+
+        compute_attention_static(
+            engine,
+            encoder,
+            scratch_q,
+            key_cache,
+            value_cache,
+            scratch_attn_out,
+            layer_idx,
+            current_seq_len,
+            cache.max_seq_len(),
+            self.config.num_heads,
+            self.config.num_kv_heads,
+            self.config.head_dim,
+        )?;
+
+        // Step 6: Output projection
+        gemm_static(
+            engine,
+            encoder,
+            scratch_attn_out,
+            &self.attn_output_weight,
+            scratch_proj_out,
+            1,
+            self.config.hidden_dim,
+            self.config.hidden_dim,
+        )?;
+
+        // Step 7: Residual connection 1
+        add_tensors_static(
+            engine,
+            encoder,
+            input,
+            scratch_proj_out,
+            scratch_hidden1,
+            self.config.hidden_dim,
+        )?;
+
+        // ===================================================================
+        // FEED-FORWARD NETWORK BLOCK
+        // ===================================================================
+
+        // Step 8: FFN input normalization
+        rmsnorm_static(
+            engine,
+            encoder,
+            scratch_hidden1,
+            &self.ffn_norm_weight,
+            scratch_ffn_norm,
+            self.config.hidden_dim,
+            self.config.rms_norm_eps,
+        )?;
+
+        // Step 9: Gate projection and activation (SiLU)
+        gemm_static(
+            engine,
+            encoder,
+            scratch_ffn_norm,
+            &self.ffn_gate_weight,
+            scratch_gate,
+            1,
+            self.config.hidden_dim,
+            self.config.ffn_dim,
+        )?;
+
+        silu_static(
+            engine,
+            encoder,
+            scratch_gate,
+            scratch_gate,  // in-place
+            self.config.ffn_dim,
+        )?;
+
+        // Step 10: Up projection
+        gemm_static(
+            engine,
+            encoder,
+            scratch_ffn_norm,
+            &self.ffn_up_weight,
+            scratch_up,
+            1,
+            self.config.hidden_dim,
+            self.config.ffn_dim,
+        )?;
+
+        // Step 11: Element-wise multiply gate and up (SwiGLU)
+        elementwise_mul_static(
+            engine,
+            encoder,
+            scratch_gate,
+            scratch_up,
+            scratch_swiglu,
+            self.config.ffn_dim,
+        )?;
+
+        // Step 12: Down projection
+        gemm_static(
+            engine,
+            encoder,
+            scratch_swiglu,
+            &self.ffn_down_weight,
+            scratch_ffn_out,
+            1,
+            self.config.ffn_dim,
+            self.config.hidden_dim,
+        )?;
+
+        // Step 13: Residual connection 2 (output to final buffer)
+        add_tensors_static(
+            engine,
+            encoder,
+            scratch_hidden1,
+            scratch_ffn_out,
+            output,
+            self.config.hidden_dim,
+        )?;
+
+        Ok(())
+    }
+
+    /// Execute the forward pass of this transformer block (DEPRECATED - ASYNC VERSION)
     ///
     /// This implements the full transformer block computation pipeline:
     /// 1. Attention block with residual:
@@ -125,6 +391,7 @@ impl TransformerBlock {
     ///
     /// # Returns
     /// Output tensor [hidden_dim] after passing through this block
+    #[deprecated(note = "Use forward_static instead for better performance")]
     pub async fn forward(
         &self,
         engine: &ComputeEngine,

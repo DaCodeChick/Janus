@@ -377,3 +377,165 @@ pub async fn gemm(
 
     Ok(output)
 }
+
+/// Perform matrix-matrix multiplication (GEMM) - Static computation graph version
+///
+/// C = A * B
+///
+/// # Arguments
+/// * `engine` - The compute engine containing GPU device and queue
+/// * `encoder` - Shared command encoder for recording GPU operations
+/// * `matrix_a` - GPU buffer containing matrix A (M × K, row-major f32 data)
+/// * `matrix_b` - GPU buffer containing matrix B (K × N, row-major f32 data)
+/// * `output` - Pre-allocated output buffer for matrix C (M × N)
+/// * `m` - Number of rows in A
+/// * `k` - Number of columns in A / rows in B
+/// * `n` - Number of columns in B
+///
+/// # Note
+/// This function records commands to the encoder but does NOT submit them.
+/// The caller is responsible for submitting the encoder.
+///
+/// # Shader
+/// Uses the WGSL shader at `shaders/gemm.wgsl` for compute operations.
+pub fn gemm_static(
+    engine: &ComputeEngine,
+    encoder: &mut wgpu::CommandEncoder,
+    matrix_a: &wgpu::Buffer,
+    matrix_b: &wgpu::Buffer,
+    output: &wgpu::Buffer,
+    m: u32,
+    k: u32,
+    n: u32,
+) -> Result<()> {
+    let device = engine.device();
+
+    // Load the shader
+    let shader_source = include_str!("../shaders/gemm.wgsl");
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("gemm_shader"),
+        source: wgpu::ShaderSource::Wgsl(shader_source.into()),
+    });
+
+    // Create uniforms buffer
+    let uniforms = GemmUniforms {
+        m,
+        k,
+        n,
+        _pad: 0,
+    };
+    let uniforms_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("gemm_uniforms"),
+        contents: bytemuck::cast_slice(&[uniforms]),
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+    });
+
+    // Create bind group layout
+    let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("gemm_bind_group_layout"),
+        entries: &[
+            // Matrix A (storage, read-only)
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            // Matrix B (storage, read-only)
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            // Output (storage, read-write)
+            wgpu::BindGroupLayoutEntry {
+                binding: 2,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: false },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            // Uniforms
+            wgpu::BindGroupLayoutEntry {
+                binding: 3,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+        ],
+    });
+
+    // Create bind group
+    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("gemm_bind_group"),
+        layout: &bind_group_layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: matrix_a.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: matrix_b.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: output.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 3,
+                resource: uniforms_buffer.as_entire_binding(),
+            },
+        ],
+    });
+
+    // Create compute pipeline
+    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("gemm_pipeline_layout"),
+        bind_group_layouts: &[Some(&bind_group_layout)],
+        immediate_size: Default::default(),
+    });
+
+    let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        label: Some("gemm_pipeline"),
+        layout: Some(&pipeline_layout),
+        module: &shader,
+        entry_point: Some("main"),
+        compilation_options: Default::default(),
+        cache: None,
+    });
+
+    // Record compute pass
+    {
+        let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            label: Some("gemm_pass"),
+            timestamp_writes: None,
+        });
+
+        compute_pass.set_pipeline(&pipeline);
+        compute_pass.set_bind_group(0, &bind_group, &[]);
+
+        // Calculate workgroup dispatch size (16x16 workgroups)
+        let workgroup_count_x = (n + 15) / 16;
+        let workgroup_count_y = (m + 15) / 16;
+        compute_pass.dispatch_workgroups(workgroup_count_x, workgroup_count_y, 1);
+    }
+
+    Ok(())
+}
