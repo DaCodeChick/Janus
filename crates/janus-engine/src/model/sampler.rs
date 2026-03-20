@@ -136,12 +136,19 @@ impl Sampler {
         let buffer_slice = staging_buffer.slice(..);
         let (sender, receiver) = futures::channel::oneshot::channel();
         buffer_slice.map_async(wgpu::MapMode::Read, move |result| {
-            sender.send(result).unwrap();
+            // Ignore send errors - if receiver is dropped, we'll catch it below
+            let _ = sender.send(result);
         });
 
         // Wait for the buffer to be mapped
         let _ = device.poll(wgpu::PollType::wait_indefinitely());
-        receiver.await.unwrap().unwrap();
+        
+        // Handle both receiver and mapping errors properly
+        let map_result = receiver
+            .await
+            .map_err(|_| crate::compute::ComputeError::BufferMappingFailed)?;
+        
+        map_result.map_err(|_| crate::compute::ComputeError::BufferMappingFailed)?;
 
         // Read the data
         let data = buffer_slice.get_mapped_range();

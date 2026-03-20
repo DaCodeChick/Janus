@@ -450,7 +450,16 @@ impl Model {
         }
 
         // Get the last token for autoregressive generation
-        let mut last_token = *token_ids.last().unwrap();
+        let mut last_token = match token_ids.last() {
+            Some(&token) => token,
+            None => {
+                // This should be unreachable due to the empty check above,
+                // but we handle it gracefully anyway
+                return Err(crate::compute::ComputeError::Other(
+                    "Empty token sequence after validation".into(),
+                ));
+            }
+        };
 
         // Start generation (decode phase)
         tracing::info!("Generation phase: generating up to {} tokens", max_tokens);
