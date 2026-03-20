@@ -56,28 +56,31 @@ impl BufferUsage {
             map_write: true,
         }
     }
+}
 
-    fn to_wgpu_usage(&self) -> wgpu::BufferUsages {
-        let mut usage = wgpu::BufferUsages::empty();
-        if self.storage {
-            usage |= wgpu::BufferUsages::STORAGE;
+/// Convert BufferUsage to wgpu::BufferUsages
+impl From<&BufferUsage> for wgpu::BufferUsages {
+    fn from(usage: &BufferUsage) -> Self {
+        let mut flags = wgpu::BufferUsages::empty();
+        if usage.storage {
+            flags |= wgpu::BufferUsages::STORAGE;
         }
-        if self.uniform {
-            usage |= wgpu::BufferUsages::UNIFORM;
+        if usage.uniform {
+            flags |= wgpu::BufferUsages::UNIFORM;
         }
-        if self.copy_src {
-            usage |= wgpu::BufferUsages::COPY_SRC;
+        if usage.copy_src {
+            flags |= wgpu::BufferUsages::COPY_SRC;
         }
-        if self.copy_dst {
-            usage |= wgpu::BufferUsages::COPY_DST;
+        if usage.copy_dst {
+            flags |= wgpu::BufferUsages::COPY_DST;
         }
-        if self.map_read {
-            usage |= wgpu::BufferUsages::MAP_READ;
+        if usage.map_read {
+            flags |= wgpu::BufferUsages::MAP_READ;
         }
-        if self.map_write {
-            usage |= wgpu::BufferUsages::MAP_WRITE;
+        if usage.map_write {
+            flags |= wgpu::BufferUsages::MAP_WRITE;
         }
-        usage
+        flags
     }
 }
 
@@ -93,7 +96,7 @@ impl Buffer {
         let buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some(label),
             size,
-            usage: usage.to_wgpu_usage(),
+            usage: (&usage).into(),
             mapped_at_creation: false,
         });
 
@@ -110,7 +113,7 @@ impl Buffer {
         let buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some(label),
             size: data.len() as u64,
-            usage: usage.to_wgpu_usage(),
+            usage: (&usage).into(),
             mapped_at_creation: true,
         });
 

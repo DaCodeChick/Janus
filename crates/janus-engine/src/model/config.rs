@@ -187,21 +187,23 @@ impl HuggingFaceConfig {
     pub fn max_seq_len(&self) -> u32 {
         self.max_seq_length.unwrap_or(2048)
     }
+}
 
-    /// Convert to Janus ModelConfig
-    ///
-    /// This maps the HuggingFace config format to Janus's internal format
-    pub fn to_model_config(&self) -> crate::model::ModelConfig {
-        crate::model::ModelConfig {
-            hidden_dim: self.hidden_size,
-            num_layers: self.num_hidden_layers,
-            num_heads: self.num_attention_heads,
-            num_kv_heads: self.num_kv_heads(),
-            head_dim: self.head_dim(),
-            ffn_dim: self.ffn_dim(),
-            vocab_size: self.vocab_size,
-            max_seq_len: self.max_seq_len(),
-            rms_norm_eps: self.rms_norm_eps,
+/// Convert HuggingFace config to Janus ModelConfig
+///
+/// This maps the HuggingFace config format to Janus's internal format
+impl From<&HuggingFaceConfig> for crate::model::ModelConfig {
+    fn from(config: &HuggingFaceConfig) -> Self {
+        Self {
+            hidden_dim: config.hidden_size,
+            num_layers: config.num_hidden_layers,
+            num_heads: config.num_attention_heads,
+            num_kv_heads: config.num_kv_heads(),
+            head_dim: config.head_dim(),
+            ffn_dim: config.ffn_dim(),
+            vocab_size: config.vocab_size,
+            max_seq_len: config.max_seq_len(),
+            rms_norm_eps: config.rms_norm_eps,
         }
     }
 }
@@ -300,7 +302,7 @@ mod tests {
         "#;
 
         let hf_config: HuggingFaceConfig = serde_json::from_str(json).unwrap();
-        let model_config = hf_config.to_model_config();
+        let model_config: crate::model::ModelConfig = (&hf_config).into();
 
         assert_eq!(model_config.hidden_dim, 4096);
         assert_eq!(model_config.num_layers, 32);

@@ -16,7 +16,7 @@ use std::env;
 use std::path::PathBuf;
 use janus_engine::{
     ComputeEngine, GGUFLoader, SafetensorsLoader, ModelLoader, HuggingFaceConfig,
-    Model, Tokenizer, Sampler, TransformerBlock, TransformerBlockConfig
+    Model, ModelConfig, Tokenizer, Sampler, TransformerBlock, TransformerBlockConfig
 };
 
 /// Build TransformerBlock from tensor map
@@ -148,7 +148,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Load configuration
     println!(">> Loading model configuration...");
     let hf_config = HuggingFaceConfig::from_file(&config_path)?;
-    let model_config = hf_config.to_model_config();
+    let model_config: ModelConfig = (&hf_config).into();
     println!("   Hidden dim: {}", model_config.hidden_dim);
     println!("   Layers: {}", model_config.num_layers);
     println!("   Attention heads: {}", model_config.num_heads);
