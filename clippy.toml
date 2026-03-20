@@ -1,0 +1,11 @@
+# Clippy configuration for Janus
+# This enforces strict error handling practices
+
+# Allow unwrap/expect in test code only
+# Production code must use explicit error handling with ? or match
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
+
+# Allow indexing in tests but warn in production
+allow-indexing-slicing-in-tests = true

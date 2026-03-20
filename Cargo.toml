@@ -10,6 +10,13 @@ members = [
 
 resolver = "2"
 
+[workspace.lints.clippy]
+# Enforce strict error handling - deny unwrap/expect in production code
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "warn"
+indexing_slicing = "warn"
+
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
