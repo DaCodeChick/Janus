@@ -365,7 +365,7 @@ fn parse_tensor_infos<R: Read>(reader: &mut R, count: usize) -> Result<Vec<Tenso
 }
 
 /// Align offset to specified alignment
-fn align_offset(offset: usize, alignment: usize) -> usize {
+const fn align_offset(offset: usize, alignment: usize) -> usize {
     ((offset + alignment - 1) / alignment) * alignment
 }
 

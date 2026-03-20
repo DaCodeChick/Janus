@@ -30,7 +30,7 @@ impl SystemState {
     }
 
     /// Check if GPU is out of VRAM (less than 10% available)
-    pub fn is_vram_exhausted(&self) -> bool {
+    pub const fn is_vram_exhausted(&self) -> bool {
         if self.total_vram_bytes == 0 {
             return true;
         }
@@ -39,14 +39,19 @@ impl SystemState {
     }
 
     /// Get VRAM usage percentage
-    pub fn vram_usage_percent(&self) -> u8 {
+    pub const fn vram_usage_percent(&self) -> u8 {
         if self.total_vram_bytes == 0 {
             return 100;
         }
         let used = self
             .total_vram_bytes
             .saturating_sub(self.available_vram_bytes);
-        ((used * 100) / self.total_vram_bytes).min(100) as u8
+        let percent = ((used * 100) / self.total_vram_bytes) as u8;
+        if percent > 100 {
+            100
+        } else {
+            percent
+        }
     }
 }
 
@@ -94,12 +99,12 @@ pub enum RouteDestination {
 
 impl RouteDestination {
     /// Check if this is a local route
-    pub fn is_local(&self) -> bool {
+    pub const fn is_local(&self) -> bool {
         matches!(self, RouteDestination::LocalEngine)
     }
 
     /// Check if this is a cloud route
-    pub fn is_cloud(&self) -> bool {
+    pub const fn is_cloud(&self) -> bool {
         matches!(self, RouteDestination::CloudAPI)
     }
 }
