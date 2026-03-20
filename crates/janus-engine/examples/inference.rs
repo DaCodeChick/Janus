@@ -1,105 +1,236 @@
 //! Simple inference example showing how to load a model and generate text
 //!
 //! Usage:
-//!   cargo run --example inference <model.gguf|model.safetensors> <tokenizer.json> "<prompt>"
+//!   cargo run --example inference <model_dir> "<prompt>"
+//!
+//! The model_dir should contain:
+//!   - model.gguf or model.safetensors (model weights)
+//!   - config.json (HuggingFace config)
+//!   - tokenizer.json (HuggingFace tokenizer)
 
+use std::collections::HashMap;
 use std::env;
 use std::path::PathBuf;
-use janus_engine::{ComputeEngine, GGUFLoader, SafetensorsLoader, ModelLoader};
+use janus_engine::{
+    ComputeEngine, GGUFLoader, ModelLoader, HuggingFaceConfig,
+    Model, Tokenizer, Sampler, TransformerBlock, TransformerBlockConfig
+};
+
+/// Build TransformerBlock from tensor map
+fn build_transformer_block(
+    config: &TransformerBlockConfig,
+    layer_idx: u32,
+    tensors: &HashMap<String, wgpu::Buffer>,
+) -> Result<TransformerBlock, Box<dyn std::error::Error>> {
+    // Common tensor name patterns for LLaMA/Mistral models
+    let patterns = vec![
+        // LLaMA pattern
+        (
+            format!("model.layers.{}.self_attn.q_proj.weight", layer_idx),
+            format!("model.layers.{}.self_attn.k_proj.weight", layer_idx),
+            format!("model.layers.{}.self_attn.v_proj.weight", layer_idx),
+            format!("model.layers.{}.self_attn.o_proj.weight", layer_idx),
+            format!("model.layers.{}.mlp.gate_proj.weight", layer_idx),
+            format!("model.layers.{}.mlp.up_proj.weight", layer_idx),
+            format!("model.layers.{}.mlp.down_proj.weight", layer_idx),
+            format!("model.layers.{}.input_layernorm.weight", layer_idx),
+            format!("model.layers.{}.post_attention_layernorm.weight", layer_idx),
+        ),
+        // GGUF pattern (dots replaced with underscores)
+        (
+            format!("blk.{}.attn_q.weight", layer_idx),
+            format!("blk.{}.attn_k.weight", layer_idx),
+            format!("blk.{}.attn_v.weight", layer_idx),
+            format!("blk.{}.attn_output.weight", layer_idx),
+            format!("blk.{}.ffn_gate.weight", layer_idx),
+            format!("blk.{}.ffn_up.weight", layer_idx),
+            format!("blk.{}.ffn_down.weight", layer_idx),
+            format!("blk.{}.attn_norm.weight", layer_idx),
+            format!("blk.{}.ffn_norm.weight", layer_idx),
+        ),
+    ];
+
+    // Try each pattern until we find matching tensors
+    for (q, k, v, o, gate, up, down, attn_norm, ffn_norm) in patterns {
+        if let (Some(q_buf), Some(k_buf), Some(v_buf), Some(o_buf),
+                Some(gate_buf), Some(up_buf), Some(down_buf),
+                Some(attn_norm_buf), Some(ffn_norm_buf)) = (
+            tensors.get(&q),
+            tensors.get(&k),
+            tensors.get(&v),
+            tensors.get(&o),
+            tensors.get(&gate),
+            tensors.get(&up),
+            tensors.get(&down),
+            tensors.get(&attn_norm),
+            tensors.get(&ffn_norm),
+        ) {
+            return Ok(TransformerBlock::new(
+                config.clone(),
+                q_buf.clone(),
+                k_buf.clone(),
+                v_buf.clone(),
+                o_buf.clone(),
+                gate_buf.clone(),
+                up_buf.clone(),
+                down_buf.clone(),
+                attn_norm_buf.clone(),
+                ffn_norm_buf.clone(),
+            ));
+        }
+    }
+
+    Err(format!("Could not find tensors for layer {}", layer_idx).into())
+}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Initialize tracing
+    tracing_subscriber::fmt::init();
+
     // Parse command line arguments
     let args: Vec<String> = env::args().collect();
 
-    if args.len() < 4 {
-        eprintln!("Usage: cargo run --example inference <model.gguf|model.safetensors> <tokenizer.json> \"<prompt>\"");
+    if args.len() < 3 {
+        eprintln!("Usage: cargo run --example inference <model_dir> \"<prompt>\"");
         eprintln!("\nExample:");
-        eprintln!("  cargo run --example inference model.gguf tokenizer.json \"Hello, world!\"");
+        eprintln!("  cargo run --example inference models/llama-7b \"Hello, world!\"");
+        eprintln!("\nThe model_dir should contain:");
+        eprintln!("  - model.gguf (model weights)");
+        eprintln!("  - config.json (HuggingFace config)");
+        eprintln!("  - tokenizer.json (HuggingFace tokenizer)");
         std::process::exit(1);
     }
 
-    let model_path = PathBuf::from(&args[1]);
-    let _tokenizer_path = PathBuf::from(&args[2]);
-    let prompt = &args[3];
+    let model_dir = PathBuf::from(&args[1]);
+    let prompt = &args[2];
 
     println!("=== Janus Engine Inference Example ===\n");
-    println!("Model: {:?}", model_path);
+    println!("Model directory: {:?}", model_dir);
     println!("Prompt: \"{}\"\n", prompt);
 
-    // Detect format from file extension
-    let extension = model_path
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("");
+    // Load configuration
+    println!(">> Loading model configuration...");
+    let config_path = model_dir.join("config.json");
+    let hf_config = HuggingFaceConfig::from_file(&config_path)?;
+    let model_config = hf_config.to_model_config();
+    println!("   Hidden dim: {}", model_config.hidden_dim);
+    println!("   Layers: {}", model_config.num_layers);
+    println!("   Attention heads: {}", model_config.num_heads);
+    println!("   Vocab size: {}", model_config.vocab_size);
+
+    // Load tokenizer
+    println!("\n>> Loading tokenizer...");
+    let tokenizer_path = model_dir.join("tokenizer.json");
+    let tokenizer = Tokenizer::from_file(tokenizer_path.to_str().unwrap())?;
+    println!("   Tokenizer loaded successfully");
 
     // Initialize GPU compute engine
-    println!(">> Initializing GPU compute engine...");
+    println!("\n>> Initializing GPU compute engine...");
     let engine = ComputeEngine::new().await?;
     let info = engine.adapter_info();
     println!("   Using GPU: {} ({:?})", info.name, info.backend);
 
-    // Load model based on format
-    println!("\n>> Loading model file...");
-    match extension {
-        "gguf" => {
-            let loader = GGUFLoader::from_file(&model_path)?;
-            println!("   Format: GGUF");
-            
-            // Show model metadata
-            if let Some(arch) = loader.get_metadata("general.architecture") {
-                println!("   Architecture: {}", arch);
+    // Load model weights
+    println!("\n>> Loading model weights...");
+    let model_path = model_dir.join("model.gguf");
+    let loader = GGUFLoader::from_file(&model_path)?;
+    println!("   Format: GGUF");
+    
+    // Show model metadata
+    if let Some(arch) = loader.get_metadata("general.architecture") {
+        println!("   Architecture: {}", arch);
+    }
+    
+    // Allocate tensors to GPU
+    println!("\n>> Allocating tensors to GPU VRAM...");
+    let tensors = engine.allocate_tensors(&loader)?;
+    println!("   Allocated {} tensors to GPU", tensors.len());
+
+    // Build transformer blocks
+    println!("\n>> Building transformer blocks...");
+    let block_config = TransformerBlockConfig {
+        hidden_dim: model_config.hidden_dim,
+        num_heads: model_config.num_heads,
+        head_dim: model_config.head_dim,
+        ffn_dim: model_config.ffn_dim,
+        rms_norm_eps: model_config.rms_norm_eps,
+    };
+
+    let mut blocks = Vec::new();
+    for layer_idx in 0..model_config.num_layers {
+        match build_transformer_block(&block_config, layer_idx, &tensors) {
+            Ok(block) => {
+                blocks.push(block);
+                if layer_idx % 8 == 0 || layer_idx == model_config.num_layers - 1 {
+                    println!("   Built layer {}/{}", layer_idx + 1, model_config.num_layers);
+                }
             }
-            if let Some(name) = loader.get_metadata("general.name") {
-                println!("   Name: {}", name);
+            Err(e) => {
+                eprintln!("Error building layer {}: {}", layer_idx, e);
+                eprintln!("\nAvailable tensors:");
+                let mut sorted: Vec<_> = tensors.keys().collect();
+                sorted.sort();
+                for name in sorted.iter().take(20) {
+                    eprintln!("  - {}", name);
+                }
+                if sorted.len() > 20 {
+                    eprintln!("  ... and {} more", sorted.len() - 20);
+                }
+                return Err(e);
             }
-            
-            // Allocate tensors to GPU
-            println!("\n>> Allocating tensors to GPU VRAM...");
-            let tensors = engine.allocate_tensors(&loader)?;
-            println!("   Allocated {} tensors to GPU", tensors.len());
-            
-            // Note: Full Model::new() would be called here in a real implementation
-            // For now, this example just demonstrates the format loading
-            println!("\n>> Model loaded successfully!");
-            println!("   (Full inference pipeline requires model configuration)");
-        }
-        "safetensors" => {
-            let loader = SafetensorsLoader::from_file(&model_path)?;
-            println!("   Format: Safetensors");
-            
-            // Get tensor count
-            let tensor_map = loader.tensors()?;
-            println!("   Tensors: {}", tensor_map.len());
-            
-            // Show some tensor info
-            for (name, tensor) in tensor_map.iter().take(3) {
-                println!("   - {}: shape={:?}, dtype={:?}, size={} bytes",
-                    name, tensor.shape, tensor.dtype, tensor.data.len());
-            }
-            
-            // Allocate tensors to GPU
-            println!("\n>> Allocating tensors to GPU VRAM...");
-            let tensors = engine.allocate_tensors(&loader)?;
-            println!("   Allocated {} tensors to GPU", tensors.len());
-            
-            println!("\n>> Model loaded successfully!");
-            println!("   (Full inference pipeline requires model configuration)");
-        }
-        other => {
-            eprintln!("Error: Unsupported file format '.{}'", other);
-            eprintln!("Supported formats: .gguf, .safetensors");
-            std::process::exit(1);
         }
     }
 
-    println!("\n=== Example Complete ===");
-    println!("\nNote: This example demonstrates model loading and GPU allocation.");
-    println!("Full text generation requires:");
-    println!("  1. Model configuration (hidden_dim, num_layers, etc.)");
-    println!("  2. Tokenizer initialization");
-    println!("  3. Sampler configuration");
-    println!("  4. Complete Model::new() with all components");
+    // Get embedding table and output weights
+    println!("\n>> Loading embedding table and output weights...");
+    let embedding_patterns = vec!["model.embed_tokens.weight", "token_embd.weight", "tok_embeddings.weight"];
+    let token_embedding_table = embedding_patterns
+        .iter()
+        .find_map(|p| tensors.get(*p))
+        .ok_or("Could not find token embedding table")?
+        .clone();
+
+    let output_norm_patterns = vec!["model.norm.weight", "output_norm.weight", "norm.weight"];
+    let output_norm_weight = output_norm_patterns
+        .iter()
+        .find_map(|p| tensors.get(*p))
+        .ok_or("Could not find output norm weight")?
+        .clone();
+
+    let lm_head_patterns = vec!["lm_head.weight", "output.weight"];
+    let lm_head_weight = lm_head_patterns
+        .iter()
+        .find_map(|p| tensors.get(*p))
+        .ok_or("Could not find LM head weight")?
+        .clone();
+
+    println!("   Found all required tensors");
+
+    // Create sampler
+    let sampler = Sampler::greedy(model_config.vocab_size);
+
+    // Create model
+    println!("\n>> Initializing model...");
+    let mut model = Model::new(
+        model_config,
+        engine,
+        tokenizer,
+        sampler,
+        token_embedding_table,
+        blocks,
+        output_norm_weight,
+        lm_head_weight,
+    )?;
+    println!("   Model initialized successfully");
+
+    // Generate text
+    println!("\n>> Generating text...\n");
+    println!("---");
+    let _output = model.generate(prompt, 128).await?;
+    println!("---");
+
+    println!("\n=== Generation Complete ===");
     
     Ok(())
 }

@@ -20,7 +20,8 @@ pub use formats::{
 };
 pub use model::{
     LMHead, LMHeadConfig, Model, ModelConfig, Sampler, SamplerConfig, Tokenizer,
-    TokenizerError, TransformerBlock, TransformerBlockConfig,
+    TokenizerError, TransformerBlock, TransformerBlockConfig, HuggingFaceConfig,
+    ConfigError,
 };
 
 // Convenience aliases for model loaders
