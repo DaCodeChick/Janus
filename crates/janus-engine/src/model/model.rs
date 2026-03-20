@@ -426,10 +426,16 @@ impl Model {
     pub async fn generate(&mut self, prompt: &str, max_tokens: usize) -> Result<String> {
         // Step A: Tokenize the prompt
         tracing::info!("Tokenizing prompt: \"{}\"", prompt);
-        let token_ids = self
+        let mut token_ids = self
             .tokenizer
-            .encode(prompt, true)
+            .encode(prompt, false)  // Don't add special tokens automatically
             .map_err(|e| crate::compute::ComputeError::Other(format!("Tokenization failed: {}", e)))?;
+
+        // CRITICAL: LLaMA models REQUIRE a BOS token at the start
+        // Without this, the model has no context anchor and produces gibberish
+        let bos_token_id = self.tokenizer.bos_token_id().unwrap_or(1);
+        token_ids.insert(0, bos_token_id);
+        tracing::info!("Prepended BOS token (ID: {}) to prompt", bos_token_id);
 
         if token_ids.is_empty() {
             return Err(crate::compute::ComputeError::Other(
