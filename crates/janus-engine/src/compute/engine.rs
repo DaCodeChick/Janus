@@ -2,7 +2,6 @@
 
 use super::error::{ComputeError, Result};
 use crate::formats::{ModelLoader, TensorDType};
-use bytemuck;
 use std::collections::HashMap;
 use wgpu::util::DeviceExt;
 
@@ -165,11 +164,10 @@ impl ComputeEngine {
 
         let total_mb = total_bytes as f64 / (1024.0 * 1024.0);
         tracing::info!(
-            "Successfully allocated {} tensors ({:.2} MB) to GPU VRAM: {} F32, {} BF16->F32, {} Q4_K, {} skipped",
+            "Successfully allocated {} tensors ({:.2} MB) to GPU VRAM: {} F32, {} Q4_K, {} skipped",
             tensor_buffers.len(),
             total_mb,
-            f32_direct_count,
-            bf16_converted_count,
+            f32_count,
             q4k_count,
             skipped_count
         );
@@ -223,67 +221,5 @@ mod tests {
                 println!("No GPU available (this is okay in CI): {}", e);
             }
         }
-    }
-
-    #[test]
-    fn test_bf16_to_f32_conversion() {
-        // Test BF16 to F32 conversion
-        // BF16 is F32 with the lower 16 bits truncated
-        
-        // Test case 1: 1.0 in BF16
-        // F32: 0x3F800000 (binary: 0011_1111_1000_0000_0000_0000_0000_0000)
-        // BF16: 0x3F80 (upper 16 bits only)
-        let bf16_bytes_1 = vec![0x80, 0x3F]; // Little-endian: 0x3F80
-        let f32_result_1 = ComputeEngine::bf16_to_f32(&bf16_bytes_1);
-        assert_eq!(f32_result_1.len(), 1);
-        assert_eq!(f32_result_1[0], 1.0);
-
-        // Test case 2: 2.0 in BF16
-        // F32: 0x40000000
-        // BF16: 0x4000
-        let bf16_bytes_2 = vec![0x00, 0x40]; // Little-endian: 0x4000
-        let f32_result_2 = ComputeEngine::bf16_to_f32(&bf16_bytes_2);
-        assert_eq!(f32_result_2.len(), 1);
-        assert_eq!(f32_result_2[0], 2.0);
-
-        // Test case 3: 0.5 in BF16
-        // F32: 0x3F000000
-        // BF16: 0x3F00
-        let bf16_bytes_3 = vec![0x00, 0x3F]; // Little-endian: 0x3F00
-        let f32_result_3 = ComputeEngine::bf16_to_f32(&bf16_bytes_3);
-        assert_eq!(f32_result_3.len(), 1);
-        assert_eq!(f32_result_3[0], 0.5);
-
-        // Test case 4: Multiple values
-        let bf16_bytes_multi = vec![
-            0x80, 0x3F, // 1.0
-            0x00, 0x40, // 2.0
-            0x00, 0x3F, // 0.5
-        ];
-        let f32_result_multi = ComputeEngine::bf16_to_f32(&bf16_bytes_multi);
-        assert_eq!(f32_result_multi.len(), 3);
-        assert_eq!(f32_result_multi[0], 1.0);
-        assert_eq!(f32_result_multi[1], 2.0);
-        assert_eq!(f32_result_multi[2], 0.5);
-    }
-
-    #[test]
-    fn test_bf16_to_f32_negative_values() {
-        // Test negative values
-        // -1.0 in F32: 0xBF800000
-        // -1.0 in BF16: 0xBF80
-        let bf16_bytes = vec![0x80, 0xBF]; // Little-endian: 0xBF80
-        let f32_result = ComputeEngine::bf16_to_f32(&bf16_bytes);
-        assert_eq!(f32_result.len(), 1);
-        assert_eq!(f32_result[0], -1.0);
-    }
-
-    #[test]
-    fn test_bf16_to_f32_zero() {
-        // Test zero
-        let bf16_bytes = vec![0x00, 0x00]; // 0.0
-        let f32_result = ComputeEngine::bf16_to_f32(&bf16_bytes);
-        assert_eq!(f32_result.len(), 1);
-        assert_eq!(f32_result[0], 0.0);
     }
 }
