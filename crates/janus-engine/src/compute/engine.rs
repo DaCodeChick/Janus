@@ -1,7 +1,7 @@
-//! ComputeEngine for initializing GPU and loading GGUF tensors into VRAM
+//! ComputeEngine for initializing GPU and loading model tensors into VRAM
 
 use super::error::{ComputeError, Result};
-use crate::gguf::GGUFFile;
+use crate::formats::{ModelLoader, TensorDType};
 use std::collections::HashMap;
 use wgpu::util::DeviceExt;
 
@@ -87,61 +87,56 @@ impl ComputeEngine {
     /// This performs a zero-copy move from the memory-mapped file directly to GPU buffers.
     /// Returns a registry mapping tensor names to their GPU buffers.
     ///
+    /// Allocate tensors from a model file to GPU buffers
+    ///
+    /// Accepts any ModelLoader implementation (GGUF, Safetensors, etc.)
+    /// and creates GPU buffers for all tensors with zero-copy from mmap.
+    ///
     /// # Phase 5 Note
     /// Currently only F32 tensors are supported. Non-F32 tensors are skipped with a warning.
     /// Quantization support will be added in Phase 6.
-    pub fn allocate_tensors(&self, gguf: &GGUFFile) -> Result<HashMap<String, wgpu::Buffer>> {
-        use crate::gguf::GGMLType;
+    pub fn allocate_tensors<L: ModelLoader>(&self, loader: &L) -> Result<HashMap<String, wgpu::Buffer>> {
+        let tensors = loader.tensors()
+            .map_err(|e| ComputeError::Other(format!("Failed to load tensors: {}", e)))?;
         
         let mut tensor_buffers = HashMap::new();
-        let tensors = gguf.tensors();
 
         tracing::info!("Allocating {} tensors to GPU VRAM", tensors.len());
 
         let mut total_bytes = 0u64;
         let mut skipped_count = 0;
 
-        for tensor in tensors {
+        for (name, tensor) in tensors {
             // Phase 5: Skip non-F32 tensors with a warning
-            if tensor.ggml_type != GGMLType::F32 {
+            if tensor.dtype != TensorDType::F32 {
                 tracing::warn!(
                     "Skipping tensor '{}' with type {:?} (only F32 supported in Phase 5)",
-                    tensor.name,
-                    tensor.ggml_type
+                    name,
+                    tensor.dtype
                 );
                 skipped_count += 1;
                 continue;
             }
 
-            // Get the exact byte slice for this tensor from the mmap
-            let tensor_data = gguf.get_tensor_data(tensor);
-            let size_bytes = tensor.size_bytes();
-
-            // Sanity check
-            if tensor_data.len() != size_bytes as usize {
-                return Err(ComputeError::InvalidBufferSize {
-                    expected: size_bytes as usize,
-                    actual: tensor_data.len(),
-                });
-            }
+            let size_bytes = tensor.data.len();
 
             // Create GPU buffer with tensor data
             let buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some(&format!("tensor_{}", tensor.name)),
-                contents: tensor_data,
+                label: Some(&format!("tensor_{}", name)),
+                contents: tensor.data,
                 usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             });
 
-            total_bytes += size_bytes;
+            total_bytes += size_bytes as u64;
 
             tracing::debug!(
                 "Allocated tensor '{}': {} bytes ({:?})",
-                tensor.name,
+                name,
                 size_bytes,
-                tensor.ggml_type
+                tensor.dtype
             );
 
-            tensor_buffers.insert(tensor.name.clone(), buffer);
+            tensor_buffers.insert(name, buffer);
         }
 
         let total_mb = total_bytes as f64 / (1024.0 * 1024.0);

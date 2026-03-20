@@ -13,6 +13,10 @@ workspace = true
 byteorder.workspace = true
 memmap2.workspace = true
 
+# Serialization
+serde.workspace = true
+serde_json.workspace = true
+
 # GPU compute
 wgpu.workspace = true
 bytemuck.workspace = true
