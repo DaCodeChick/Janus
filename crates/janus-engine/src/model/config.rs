@@ -196,6 +196,7 @@ impl HuggingFaceConfig {
             hidden_dim: self.hidden_size,
             num_layers: self.num_hidden_layers,
             num_heads: self.num_attention_heads,
+            num_kv_heads: self.num_kv_heads(),
             head_dim: self.head_dim(),
             ffn_dim: self.ffn_dim(),
             vocab_size: self.vocab_size,

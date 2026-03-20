@@ -17,8 +17,10 @@ use wgpu::util::DeviceExt;
 struct AttentionUniforms {
     seq_len: u32,
     num_heads: u32,
+    num_kv_heads: u32,
     head_dim: u32,
     scale: f32,
+    _pad: [u32; 3],
 }
 
 /// Uniforms structure for Softmax operation
@@ -32,20 +34,25 @@ struct SoftmaxUniforms {
     _pad: u32,
 }
 
-/// Compute scaled dot-product attention: Attention(Q, K, V) = softmax(Q * K^T / sqrt(d)) * V
+/// Compute scaled dot-product attention with Grouped Query Attention (GQA) support
 ///
-/// This function implements multi-head attention by:
+/// Attention(Q, K, V) = softmax(Q * K^T / sqrt(d)) * V
+///
+/// This function implements multi-head attention with GQA by:
 /// 1. Computing attention scores (Q * K^T) scaled by 1/sqrt(head_dim)
 /// 2. Applying softmax to get attention probabilities
 /// 3. Multiplying probabilities by values to get output
 ///
+/// For GQA, each KV head is shared across multiple query heads (num_heads / num_kv_heads).
+///
 /// # Arguments
 /// * `engine` - The compute engine containing GPU device and queue
 /// * `query` - GPU buffer containing query tensor [num_heads * head_dim]
-/// * `key_cache` - GPU buffer containing all cached keys [seq_len * num_heads * head_dim]
-/// * `value_cache` - GPU buffer containing all cached values [seq_len * num_heads * head_dim]
+/// * `key_cache` - GPU buffer containing all cached keys [seq_len * num_kv_heads * head_dim]
+/// * `value_cache` - GPU buffer containing all cached values [seq_len * num_kv_heads * head_dim]
 /// * `seq_len` - Current sequence length (number of tokens in cache)
-/// * `num_heads` - Number of attention heads
+/// * `num_heads` - Number of query attention heads
+/// * `num_kv_heads` - Number of key-value attention heads (for GQA)
 /// * `head_dim` - Dimension of each attention head
 ///
 /// # Returns
@@ -60,6 +67,7 @@ pub async fn compute_attention(
     value_cache: &wgpu::Buffer,
     seq_len: u32,
     num_heads: u32,
+    num_kv_heads: u32,
     head_dim: u32,
 ) -> Result<wgpu::Buffer> {
     let device = engine.device();
@@ -113,8 +121,10 @@ pub async fn compute_attention(
     let attention_uniforms = AttentionUniforms {
         seq_len,
         num_heads,
+        num_kv_heads,
         head_dim,
         scale,
+        _pad: [0; 3],
     };
     let attention_uniforms_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("attention_uniforms"),

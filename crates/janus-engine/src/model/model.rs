@@ -25,6 +25,7 @@
 //!         hidden_dim: 4096,
 //!         num_layers: 32,
 //!         num_heads: 32,
+//!         num_kv_heads: 32, // For MHA; use fewer for GQA (e.g., 4 for TinyLlama)
 //!         head_dim: 128,
 //!         ffn_dim: 11008,
 //!         vocab_size: 32000,
@@ -73,6 +74,8 @@ pub struct ModelConfig {
     pub num_layers: u32,
     /// Number of attention heads (e.g., 32 for LLaMA-7B)
     pub num_heads: u32,
+    /// Number of key-value heads for GQA (e.g., 4 for TinyLlama, 32 for MHA)
+    pub num_kv_heads: u32,
     /// Dimension of each attention head
     pub head_dim: u32,
     /// Feed-forward intermediate dimension (e.g., 11008 for LLaMA-7B)
@@ -155,11 +158,11 @@ impl Model {
             )));
         }
 
-        // Create KV cache
+        // Create KV cache (uses num_kv_heads for GQA support)
         let cache = KVCache::new(
             &engine,
             config.max_seq_len,
-            config.num_heads,
+            config.num_kv_heads,
             config.head_dim,
         )?;
 
@@ -560,6 +563,7 @@ mod tests {
             hidden_dim: 4096,
             num_layers: 32,
             num_heads: 32,
+            num_kv_heads: 32, // MHA: same as num_heads
             head_dim: 128,
             ffn_dim: 11008,
             vocab_size: 32000,
@@ -583,6 +587,7 @@ mod tests {
             hidden_dim: 64,
             num_layers: 4, // Expect 4 layers
             num_heads: 4,
+            num_kv_heads: 4, // MHA: same as num_heads
             head_dim: 16,
             ffn_dim: 128,
             vocab_size: 1000,

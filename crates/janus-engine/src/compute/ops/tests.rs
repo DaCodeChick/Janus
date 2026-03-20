@@ -852,6 +852,7 @@ async fn test_attention_simple() {
         &value_buffer,
         seq_len,
         num_heads,
+        num_heads, // num_kv_heads = num_heads for MHA
         head_dim,
     )
     .await
@@ -962,6 +963,7 @@ async fn test_attention_with_cache() {
         value_cache,
         current_seq_len,
         num_heads,
+        num_heads, // num_kv_heads = num_heads for MHA
         head_dim,
     )
     .await

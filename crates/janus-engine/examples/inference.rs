@@ -206,6 +206,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let block_config = TransformerBlockConfig {
         hidden_dim: model_config.hidden_dim,
         num_heads: model_config.num_heads,
+        num_kv_heads: model_config.num_kv_heads,
         head_dim: model_config.head_dim,
         ffn_dim: model_config.ffn_dim,
         rms_norm_eps: model_config.rms_norm_eps,

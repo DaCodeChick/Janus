@@ -20,6 +20,8 @@ pub struct TransformerBlockConfig {
     pub hidden_dim: u32,
     /// Number of attention heads (e.g., 32 for LLaMA-7B)
     pub num_heads: u32,
+    /// Number of key-value heads for GQA (e.g., 4 for TinyLlama)
+    pub num_kv_heads: u32,
     /// Dimension of each attention head (typically hidden_dim / num_heads)
     pub head_dim: u32,
     /// Feed-forward intermediate dimension (typically 4 * hidden_dim)
@@ -145,6 +147,9 @@ impl TransformerBlock {
         .await?;
 
         // Step 2: Compute Q, K, V projections
+        // For GQA: Q uses full hidden_dim, but K/V use num_kv_heads * head_dim
+        let kv_dim = self.config.num_kv_heads * self.config.head_dim;
+        
         let q = gemm(
             engine,
             &input_norm,
@@ -161,7 +166,7 @@ impl TransformerBlock {
             &self.attn_k_weight,
             1,
             self.config.hidden_dim,
-            self.config.hidden_dim,
+            kv_dim,
         )
         .await?;
 
@@ -171,7 +176,7 @@ impl TransformerBlock {
             &self.attn_v_weight,
             1,
             self.config.hidden_dim,
-            self.config.hidden_dim,
+            kv_dim,
         )
         .await?;
 
@@ -189,7 +194,7 @@ impl TransformerBlock {
         let k_rot = rope(
             engine,
             &k,
-            self.config.num_heads,
+            self.config.num_kv_heads,
             self.config.head_dim,
             seq_pos,
             10000.0, // theta_base (standard value for LLaMA)
@@ -210,6 +215,7 @@ impl TransformerBlock {
             value_cache,
             current_seq_len,
             self.config.num_heads,
+            self.config.num_kv_heads,
             self.config.head_dim,
         )
         .await?;
