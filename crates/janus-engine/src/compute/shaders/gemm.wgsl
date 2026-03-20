@@ -35,7 +35,9 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     
     for (var k: u32 = 0u; k < uniforms.K; k = k + 1u) {
         let a_val = matrix_a[row * uniforms.K + k];
-        let b_val = matrix_b[k * uniforms.N + col];
+        // CRITICAL: PyTorch/HuggingFace stores weights as [out_features, in_features]
+        // This means B is physically [N, K], so we must transpose on read
+        let b_val = matrix_b[col * uniforms.K + k];
         sum = sum + a_val * b_val;
     }
     

@@ -188,14 +188,13 @@ async fn test_gemm_simple() {
         4.0, 5.0, 6.0,
     ];
 
-    // Create matrix B (3x2):
-    // [7.0,  8.0]
-    // [9.0, 10.0]
-    // [11.0, 12.0]
+    // Create matrix B (3x2) in PyTorch format [out_features, in_features] = [2, 3]
+    // Physically stored as [N x K] (transposed):
+    // [7.0,  9.0, 11.0]   <- output feature 0
+    // [8.0, 10.0, 12.0]   <- output feature 1
     let matrix_b: Vec<f32> = vec![
-        7.0, 8.0,
-        9.0, 10.0,
-        11.0, 12.0,
+        7.0, 9.0, 11.0,
+        8.0, 10.0, 12.0,
     ];
 
     // Expected output C = A * B (2x2):
@@ -266,14 +265,15 @@ async fn test_gemm_square() {
         0.0, 0.0, 4.0,
     ];
 
-    // Matrix B (3x3):
-    // [1.0, 2.0, 3.0]
-    // [4.0, 5.0, 6.0]
-    // [7.0, 8.0, 9.0]
+    // Matrix B (3x3) in PyTorch format [out_features, in_features] = [3, 3]
+    // Physically stored as [N x K] (transposed):
+    // [1.0, 4.0, 7.0]   <- output feature 0
+    // [2.0, 5.0, 8.0]   <- output feature 1  
+    // [3.0, 6.0, 9.0]   <- output feature 2
     let matrix_b: Vec<f32> = vec![
-        1.0, 2.0, 3.0,
-        4.0, 5.0, 6.0,
-        7.0, 8.0, 9.0,
+        1.0, 4.0, 7.0,
+        2.0, 5.0, 8.0,
+        3.0, 6.0, 9.0,
     ];
 
     // Expected C = A * B (3x3):

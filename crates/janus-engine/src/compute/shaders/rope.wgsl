@@ -60,7 +60,9 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let x1 = input[idx_2];
     
     // Calculate position
-    let position = token_idx + uniforms.position;
+    // CRITICAL: All heads for a single token MUST use the same position
+    // token_idx evaluates to head_idx when processing one token at a time
+    let position = uniforms.position;
     
     // Calculate rotation angle
     // theta = theta_base ^ (2 * dim_pair / head_dim)
