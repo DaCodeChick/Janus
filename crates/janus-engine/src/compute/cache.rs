@@ -13,7 +13,8 @@ use wgpu::util::DeviceExt;
 /// token and all previous tokens. Instead of recomputing the Key and Value projections
 /// for all previous tokens at each step, we cache them in GPU memory.
 ///
-/// Layout: [max_seq_len][num_heads][head_dim]
+/// Layout: [max_seq_len][num_kv_heads][head_dim]
+/// Note: For GQA (Grouped Query Attention), num_kv_heads < num_query_heads
 pub struct KVCache {
     /// GPU buffer for cached Keys
     key_cache: wgpu::Buffer,
@@ -24,8 +25,8 @@ pub struct KVCache {
     /// Maximum sequence length supported by this cache
     max_seq_len: u32,
     
-    /// Number of attention heads
-    num_heads: u32,
+    /// Number of KV attention heads (for GQA, this is fewer than query heads)
+    num_kv_heads: u32,
     
     /// Dimension of each attention head
     head_dim: u32,
@@ -40,7 +41,7 @@ impl KVCache {
     /// # Arguments
     /// * `engine` - The compute engine for GPU operations
     /// * `max_seq_len` - Maximum sequence length to support (e.g., 2048, 4096)
-    /// * `num_heads` - Number of attention heads
+    /// * `num_kv_heads` - Number of KV attention heads (for GQA)
     /// * `head_dim` - Dimension of each attention head
     ///
     /// # Returns
@@ -48,18 +49,18 @@ impl KVCache {
     pub fn new(
         engine: &ComputeEngine,
         max_seq_len: u32,
-        num_heads: u32,
+        num_kv_heads: u32,
         head_dim: u32,
     ) -> Result<Self> {
         let device = engine.device();
         
         // Calculate total size in bytes
-        let cache_size = (max_seq_len * num_heads * head_dim) as u64 * std::mem::size_of::<f32>() as u64;
+        let cache_size = (max_seq_len * num_kv_heads * head_dim) as u64 * std::mem::size_of::<f32>() as u64;
         
         tracing::info!(
-            "Allocating KV cache: max_seq_len={}, num_heads={}, head_dim={}, total_size={:.2} MB",
+            "Allocating KV cache: max_seq_len={}, num_kv_heads={}, head_dim={}, total_size={:.2} MB",
             max_seq_len,
-            num_heads,
+            num_kv_heads,
             head_dim,
             (cache_size * 2) as f64 / (1024.0 * 1024.0)
         );
@@ -84,7 +85,7 @@ impl KVCache {
             key_cache,
             value_cache,
             max_seq_len,
-            num_heads,
+            num_kv_heads,
             head_dim,
             current_position: 0,
         })
@@ -94,8 +95,8 @@ impl KVCache {
     ///
     /// # Arguments
     /// * `engine` - The compute engine for GPU operations
-    /// * `new_key` - GPU buffer containing the new Key projection (num_heads * head_dim elements)
-    /// * `new_value` - GPU buffer containing the new Value projection (num_heads * head_dim elements)
+    /// * `new_key` - GPU buffer containing the new Key projection (num_kv_heads * head_dim elements)
+    /// * `new_value` - GPU buffer containing the new Value projection (num_kv_heads * head_dim elements)
     /// * `position` - Position in the sequence to write to (0 to max_seq_len-1)
     ///
     /// # Returns
@@ -152,7 +153,7 @@ impl KVCache {
         let uniforms = UpdateCacheUniforms {
             cache_position: position,
             token_dim: self.head_dim,
-            num_heads: self.num_heads,
+            num_heads: self.num_kv_heads,
             _pad: 0,
         };
         
@@ -253,7 +254,7 @@ impl KVCache {
             compute_pass.set_bind_group(0, &bind_group, &[]);
             
             // Calculate workgroup count (256 threads per workgroup)
-            let total_elements = self.num_heads * self.head_dim;
+            let total_elements = self.num_kv_heads * self.head_dim;
             let workgroup_count = (total_elements + 255) / 256;
             compute_pass.dispatch_workgroups(workgroup_count, 1, 1);
         }
@@ -282,9 +283,9 @@ impl KVCache {
         self.max_seq_len
     }
     
-    /// Get the number of attention heads
-    pub const fn num_heads(&self) -> u32 {
-        self.num_heads
+    /// Get the number of KV attention heads
+    pub const fn num_kv_heads(&self) -> u32 {
+        self.num_kv_heads
     }
     
     /// Get the dimension of each attention head

@@ -641,26 +641,26 @@ async fn test_kv_cache_initialization() {
         }
     };
 
-    // Create a KV cache for 1024 tokens, 8 heads, 64 dim per head
+    // Create a KV cache for 1024 tokens, 8 KV heads, 64 dim per head
     let max_seq_len = 1024;
-    let num_heads = 8;
+    let num_kv_heads = 8;
     let head_dim = 64;
     
-    let cache = KVCache::new(&engine, max_seq_len, num_heads, head_dim)
+    let cache = KVCache::new(&engine, max_seq_len, num_kv_heads, head_dim)
         .expect("Failed to create KV cache");
     
     // Verify dimensions
     assert_eq!(cache.max_seq_len(), max_seq_len);
-    assert_eq!(cache.num_heads(), num_heads);
+    assert_eq!(cache.num_kv_heads(), num_kv_heads);
     assert_eq!(cache.head_dim(), head_dim);
     assert_eq!(cache.current_position(), 0);
     
     println!("✓ KV Cache initialization test passed!");
     println!("  Max sequence length: {}", max_seq_len);
-    println!("  Number of heads: {}", num_heads);
+    println!("  Number of KV heads: {}", num_kv_heads);
     println!("  Head dimension: {}", head_dim);
     println!("  Total cache size: {:.2} MB", 
-        (max_seq_len * num_heads * head_dim * 2 * 4) as f64 / (1024.0 * 1024.0));
+        (max_seq_len * num_kv_heads * head_dim * 2 * 4) as f64 / (1024.0 * 1024.0));
 }
 
 #[tokio::test]
@@ -676,14 +676,14 @@ async fn test_kv_cache_update() {
 
     // Create a small KV cache for testing
     let max_seq_len = 16;
-    let num_heads = 2;
+    let num_kv_heads = 2;
     let head_dim = 4;
     
-    let mut cache = KVCache::new(&engine, max_seq_len, num_heads, head_dim)
+    let mut cache = KVCache::new(&engine, max_seq_len, num_kv_heads, head_dim)
         .expect("Failed to create KV cache");
     
     // Create fake Key and Value tensors for one token
-    // Shape: [num_heads * head_dim] = [2 * 4] = 8 elements
+    // Shape: [num_kv_heads * head_dim] = [2 * 4] = 8 elements
     let new_key: Vec<f32> = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0];
     let new_value: Vec<f32> = vec![0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8];
     
@@ -709,7 +709,7 @@ async fn test_kv_cache_update() {
     assert_eq!(cache.current_position(), 1);
     
     // Read back the key cache to verify it was written correctly
-    let cache_size = (max_seq_len * num_heads * head_dim * 4) as u64;
+    let cache_size = (max_seq_len * num_kv_heads * head_dim * 4) as u64;
     let key_cache_data = read_buffer_to_vec(&engine, cache.key_cache(), cache_size).await;
     
     // The first 8 elements should match our new_key
