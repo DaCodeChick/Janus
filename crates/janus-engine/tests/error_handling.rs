@@ -182,6 +182,12 @@ fn test_config_supported_architectures() {
         "LlamaForCausalLM",
         "MistralForCausalLM",
         "GPTNeoXForCausalLM",
+        "PhiForCausalLM",
+        "Phi3ForCausalLM",
+        "GemmaForCausalLM",
+        "Gemma2ForCausalLM",
+        "QWenLMHeadModel",
+        "Qwen2ForCausalLM",
     ];
 
     for arch in supported {

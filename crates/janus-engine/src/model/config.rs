@@ -23,7 +23,7 @@ pub enum ConfigError {
     #[error("Invalid configuration: {0}\n\nSuggestions:\n  - Verify all dimensions are positive integers\n  - Check that hidden_size is divisible by num_attention_heads\n  - Ensure num_key_value_heads divides num_attention_heads evenly (for GQA)")]
     InvalidConfig(String),
 
-    #[error("Unsupported architecture: {architecture}\n\nSupported architectures:\n  - LlamaForCausalLM (LLaMA, Mistral)\n  - MistralForCausalLM\n  - GPTNeoXForCausalLM (TinyLlama, Pythia)\n\nGot architecture: {architecture}\n\nSuggestions:\n  - Check if this architecture is supported in the latest Janus version\n  - Some architectures may work with compatible configs (e.g., Mistral uses LLaMA architecture)\n  - File an issue on GitHub if you need support for this architecture")]
+    #[error("Unsupported architecture: {architecture}\n\nSupported architectures:\n  - LlamaForCausalLM (LLaMA, Mistral, Vicuna)\n  - MistralForCausalLM (Mistral)\n  - GPTNeoXForCausalLM (TinyLlama, Pythia)\n  - PhiForCausalLM (Microsoft Phi)\n  - Phi3ForCausalLM (Microsoft Phi-3)\n  - GemmaForCausalLM (Google Gemma)\n  - Gemma2ForCausalLM (Google Gemma 2)\n  - QWenLMHeadModel (Alibaba Qwen)\n  - Qwen2ForCausalLM (Alibaba Qwen 2)\n\nGot architecture: {architecture}\n\nNote: Most modern decoder-only transformer architectures use compatible components\n(RoPE, RMSNorm, GQA) and should work with LLaMA-style inference.\n\nSuggestions:\n  - Check if this architecture is supported in the latest Janus version\n  - Try using a compatible config (many models are LLaMA-compatible)\n  - File an issue on GitHub if you need support for this architecture")]
     UnsupportedArchitecture { architecture: String },
 }
 
@@ -178,6 +178,12 @@ impl HuggingFaceConfig {
                 "LlamaForCausalLM",
                 "MistralForCausalLM",
                 "GPTNeoXForCausalLM",
+                "PhiForCausalLM",
+                "Phi3ForCausalLM",
+                "GemmaForCausalLM",
+                "Gemma2ForCausalLM",
+                "QWenLMHeadModel",
+                "Qwen2ForCausalLM",
             ];
 
             if !archs.is_empty() {

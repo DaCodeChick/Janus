@@ -21,19 +21,15 @@
   - See: `crates/janus-engine/src/loaders/` (GGUF and Safetensors loaders)
 
 ### Model Support
-- [ ] **Add support for more model architectures**
-  - Currently supports: LLaMA, Mistral, TinyLlama
-  - Consider adding: Phi, Gemma, Qwen, etc.
-  - See: `crates/janus-engine/src/model/`
-
-- [x] **Improve quantization support**
-  - ✓ Implemented Q5_K quantization (5-bit, 256-element superblocks)
-  - ✓ Implemented Q8_0 quantization (8-bit, 32-element blocks)
-  - ✓ Added WGSL shaders for on-the-fly dequantization (gemm_q5_k.wgsl, gemm_q8_0.wgsl)
-  - ✓ Updated ComputeEngine to handle Q5_K and Q8_0 tensor allocation
-  - ✓ Full matrix-vector multiplication support for all quantized formats
-  - Supported formats: Q4_K, Q5_K, Q8_0
-  - See: `crates/janus-engine/src/compute/ops/quantized.rs`, `crates/janus-engine/src/compute/shaders/`
+- [x] **Add support for more model architectures**
+  - ✓ Added support for Microsoft Phi (Phi, Phi-3)
+  - ✓ Added support for Google Gemma (Gemma, Gemma 2)
+  - ✓ Added support for Alibaba Qwen (Qwen, Qwen 2)
+  - ✓ All architectures use compatible LLaMA-style components (RoPE, RMSNorm, GQA)
+  - ✓ Comprehensive validation and error messages
+  - ✓ Integration tests for all new architectures
+  - Supported: LLaMA, Mistral, TinyLlama, Phi, Phi-3, Gemma, Gemma 2, Qwen, Qwen2, GPT-NeoX
+  - See: `crates/janus-engine/src/model/config.rs`, `doc/SUPPORTED_MODELS.md`
 
 ## Low Priority
 
