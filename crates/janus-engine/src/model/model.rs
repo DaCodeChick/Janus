@@ -612,6 +612,7 @@ impl Model {
             block.forward_static(
                 &self.engine,
                 &mut encoder,
+                &self.pipeline_cache,
                 input_buf,
                 output_buf,
                 &self.scratch_input_norm,

@@ -25,7 +25,7 @@ mod tests_q4k;
 // Re-export all public functions
 pub use activation::{rmsnorm, rmsnorm_static, silu, silu_static};
 pub use attention::{compute_attention, compute_attention_static};
-pub use elementwise::{add_tensors, add_tensors_static, elementwise_mul, elementwise_mul_static};
+pub use elementwise::{add_tensors, elementwise_mul};
 pub use matmul::{gemm, gemm_static, matmul};
 pub use quantized::{gemm_q4_k, Q4K_BLOCK_BYTES, Q4K_BLOCK_SIZE};
-pub use rope::{rope, rope_static};
+pub use rope::rope;

@@ -8,12 +8,12 @@
 //! - Residual connections
 
 use crate::compute::cache::KVCache;
-use crate::compute::{ComputeEngine, Result};
 use crate::compute::ops::{
-    add_tensors, compute_attention, elementwise_mul, gemm, rmsnorm, rope, silu,
-    add_tensors_static, compute_attention_static, elementwise_mul_static, 
-    gemm_static, rmsnorm_static, rope_static, silu_static,
+    add_tensors, compute_attention_static, elementwise_mul, gemm_static, rmsnorm_static, rope,
+    silu_static,
 };
+use crate::compute::pipeline_cache::PipelineCache;
+use crate::compute::{ComputeEngine, Result};
 
 /// Configuration for a transformer block
 #[derive(Debug, Clone)]
@@ -151,6 +151,7 @@ impl TransformerBlock {
         &self,
         engine: &ComputeEngine,
         encoder: &mut wgpu::CommandEncoder,
+        pipeline_cache: &PipelineCache,
         input: &wgpu::Buffer,
         output: &wgpu::Buffer,
         scratch_input_norm: &wgpu::Buffer,
@@ -189,7 +190,7 @@ impl TransformerBlock {
         // Step 2: Compute Q, K, V projections
         // For GQA: Q uses full hidden_dim, but K/V use num_kv_heads * head_dim
         let kv_dim = self.config.num_kv_heads * self.config.head_dim;
-        
+
         gemm_static(
             engine,
             encoder,
@@ -224,22 +225,24 @@ impl TransformerBlock {
         )?;
 
         // Step 3: Apply RoPE to Q and K (output to separate buffers)
-        rope_static(
+        rope(
             engine,
             encoder,
+            pipeline_cache,
             scratch_q,
-            scratch_q_rot,  // separate output buffer
+            scratch_q_rot, // separate output buffer
             self.config.num_heads,
             self.config.head_dim,
             seq_pos,
             10000.0, // theta_base (standard value for LLaMA)
         )?;
 
-        rope_static(
+        rope(
             engine,
             encoder,
+            pipeline_cache,
             scratch_k,
-            scratch_k_rot,  // separate output buffer
+            scratch_k_rot, // separate output buffer
             self.config.num_kv_heads,
             self.config.head_dim,
             seq_pos,
@@ -248,7 +251,14 @@ impl TransformerBlock {
 
         // Step 4: Update KV cache with new K and V
         // Note: This may still require a sync point - will address in Phase 7
-        cache.update_static(engine, encoder, scratch_k_rot, scratch_v, layer_idx, seq_pos)?;
+        cache.update_static(
+            engine,
+            encoder,
+            scratch_k_rot,
+            scratch_v,
+            layer_idx,
+            seq_pos,
+        )?;
 
         // Step 5: Compute attention using cached K and V
         let (key_cache, value_cache) = cache.buffers();
@@ -257,7 +267,7 @@ impl TransformerBlock {
         compute_attention_static(
             engine,
             encoder,
-            scratch_q_rot,  // Use rotated Q
+            scratch_q_rot, // Use rotated Q
             key_cache,
             value_cache,
             scratch_attn_out,
@@ -282,9 +292,10 @@ impl TransformerBlock {
         )?;
 
         // Step 7: Residual connection 1
-        add_tensors_static(
+        add_tensors(
             engine,
             encoder,
+            pipeline_cache,
             input,
             scratch_proj_out,
             scratch_hidden1,
@@ -322,7 +333,7 @@ impl TransformerBlock {
             engine,
             encoder,
             scratch_gate,
-            scratch_gate,  // in-place
+            scratch_gate, // in-place
             self.config.ffn_dim,
         )?;
 
@@ -339,9 +350,10 @@ impl TransformerBlock {
         )?;
 
         // Step 11: Element-wise multiply gate and up (SwiGLU)
-        elementwise_mul_static(
+        elementwise_mul(
             engine,
             encoder,
+            pipeline_cache,
             scratch_gate,
             scratch_up,
             scratch_swiglu,
@@ -361,9 +373,10 @@ impl TransformerBlock {
         )?;
 
         // Step 13: Residual connection 2 (output to final buffer)
-        add_tensors_static(
+        add_tensors(
             engine,
             encoder,
+            pipeline_cache,
             scratch_hidden1,
             scratch_ffn_out,
             output,
@@ -371,199 +384,6 @@ impl TransformerBlock {
         )?;
 
         Ok(())
-    }
-
-    /// Execute the forward pass of this transformer block (DEPRECATED - ASYNC VERSION)
-    ///
-    /// This implements the full transformer block computation pipeline:
-    /// 1. Attention block with residual:
-    ///    - RMSNorm(input)
-    ///    - Multi-head attention with RoPE
-    ///    - Residual connection: input + attention_output
-    /// 2. Feed-forward block with residual:
-    ///    - RMSNorm(hidden_1)
-    ///    - SwiGLU: SiLU(gate) * up
-    ///    - Down projection
-    ///    - Residual connection: hidden_1 + ffn_output
-    ///
-    /// # Arguments
-    /// * `engine` - The compute engine for GPU operations
-    /// * `input` - Input tensor [hidden_dim] for the current token
-    /// * `cache` - KV cache for storing/retrieving attention keys and values
-    /// * `layer_idx` - The transformer layer index (for cache segmentation)
-    /// * `seq_pos` - Position in the sequence (for RoPE)
-    ///
-    /// # Returns
-    /// Output tensor [hidden_dim] after passing through this block
-    #[deprecated(note = "Use forward_static instead for better performance")]
-    pub async fn forward(
-        &self,
-        engine: &ComputeEngine,
-        input: &wgpu::Buffer,
-        cache: &mut KVCache,
-        layer_idx: u32,
-        seq_pos: u32,
-    ) -> Result<wgpu::Buffer> {
-        // ===================================================================
-        // ATTENTION BLOCK
-        // ===================================================================
-
-        // Step 1: Input normalization
-        let input_norm = rmsnorm(
-            engine,
-            input,
-            &self.attn_norm_weight,
-            self.config.hidden_dim,
-            self.config.rms_norm_eps,
-        )
-        .await?;
-
-        // Step 2: Compute Q, K, V projections
-        // For GQA: Q uses full hidden_dim, but K/V use num_kv_heads * head_dim
-        let kv_dim = self.config.num_kv_heads * self.config.head_dim;
-        
-        let q = gemm(
-            engine,
-            &input_norm,
-            &self.attn_q_weight,
-            1,
-            self.config.hidden_dim,
-            self.config.hidden_dim,
-        )
-        .await?;
-
-        let k = gemm(
-            engine,
-            &input_norm,
-            &self.attn_k_weight,
-            1,
-            self.config.hidden_dim,
-            kv_dim,
-        )
-        .await?;
-
-        let v = gemm(
-            engine,
-            &input_norm,
-            &self.attn_v_weight,
-            1,
-            self.config.hidden_dim,
-            kv_dim,
-        )
-        .await?;
-
-        // Step 3: Apply RoPE to Q and K
-        let q_rot = rope(
-            engine,
-            &q,
-            self.config.num_heads,
-            self.config.head_dim,
-            seq_pos,
-            10000.0, // theta_base (standard value for LLaMA)
-        )
-        .await?;
-
-        let k_rot = rope(
-            engine,
-            &k,
-            self.config.num_kv_heads,
-            self.config.head_dim,
-            seq_pos,
-            10000.0, // theta_base (standard value for LLaMA)
-        )
-        .await?;
-
-        // Step 4: Update KV cache with new K and V
-        cache.update(engine, &k_rot, &v, layer_idx, seq_pos).await?;
-
-        // Step 5: Compute attention using cached K and V
-        let (key_cache, value_cache) = cache.buffers();
-        let current_seq_len = seq_pos + 1; // Sequence length including current token
-
-        let attn_out = compute_attention(
-            engine,
-            &q_rot,
-            key_cache,
-            value_cache,
-            layer_idx,
-            current_seq_len,
-            cache.max_seq_len(),
-            self.config.num_heads,
-            self.config.num_kv_heads,
-            self.config.head_dim,
-        )
-        .await?;
-
-        // Step 6: Output projection
-        let proj_out = gemm(
-            engine,
-            &attn_out,
-            &self.attn_output_weight,
-            1,
-            self.config.hidden_dim,
-            self.config.hidden_dim,
-        )
-        .await?;
-
-        // Step 7: Residual connection 1
-        let hidden_1 = add_tensors(engine, input, &proj_out, self.config.hidden_dim).await?;
-
-        // ===================================================================
-        // FEED-FORWARD NETWORK BLOCK
-        // ===================================================================
-
-        // Step 8: FFN input normalization
-        let ffn_norm = rmsnorm(
-            engine,
-            &hidden_1,
-            &self.ffn_norm_weight,
-            self.config.hidden_dim,
-            self.config.rms_norm_eps,
-        )
-        .await?;
-
-        // Step 9: Gate projection and activation (SiLU)
-        let gate_proj = gemm(
-            engine,
-            &ffn_norm,
-            &self.ffn_gate_weight,
-            1,
-            self.config.hidden_dim,
-            self.config.ffn_dim,
-        )
-        .await?;
-
-        let gate = silu(engine, &gate_proj, self.config.ffn_dim).await?;
-
-        // Step 10: Up projection
-        let up = gemm(
-            engine,
-            &ffn_norm,
-            &self.ffn_up_weight,
-            1,
-            self.config.hidden_dim,
-            self.config.ffn_dim,
-        )
-        .await?;
-
-        // Step 11: Element-wise multiply gate and up (SwiGLU)
-        let swiglu = elementwise_mul(engine, &gate, &up, self.config.ffn_dim).await?;
-
-        // Step 12: Down projection
-        let ffn_out = gemm(
-            engine,
-            &swiglu,
-            &self.ffn_down_weight,
-            1,
-            self.config.ffn_dim,
-            self.config.hidden_dim,
-        )
-        .await?;
-
-        // Step 13: Residual connection 2
-        let final_out = add_tensors(engine, &hidden_1, &ffn_out, self.config.hidden_dim).await?;
-
-        Ok(final_out)
     }
 
     /// Get a reference to the block configuration
