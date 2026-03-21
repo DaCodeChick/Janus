@@ -323,7 +323,7 @@ impl TransformerBlock {
             self.config.rms_norm_eps,
         )?;
 
-        // Step 9: Gate projection and activation (SiLU)
+        // Step 9: Gate projection
         gemm(
             engine,
             encoder,
@@ -333,15 +333,6 @@ impl TransformerBlock {
             scratch_gate,
             1,
             self.config.hidden_dim,
-            self.config.ffn_dim,
-        )?;
-
-        silu(
-            engine,
-            encoder,
-            pipeline_cache,
-            scratch_gate,
-            scratch_gate, // in-place
             self.config.ffn_dim,
         )?;
 
@@ -358,18 +349,28 @@ impl TransformerBlock {
             self.config.ffn_dim,
         )?;
 
-        // Step 11: Element-wise multiply gate and up (SwiGLU)
-        elementwise_mul(
+        // Step 11: Apply SiLU activation to gate (write to swiglu buffer temporarily)
+        silu(
             engine,
             encoder,
             pipeline_cache,
             scratch_gate,
-            scratch_up,
-            scratch_swiglu,
+            scratch_swiglu, // Use swiglu buffer as temp to avoid in-place conflict
             self.config.ffn_dim,
         )?;
 
-        // Step 12: Down projection
+        // Step 12: Element-wise multiply gate (after SiLU) and up (SwiGLU)
+        elementwise_mul(
+            engine,
+            encoder,
+            pipeline_cache,
+            scratch_swiglu, // SiLU output
+            scratch_up,
+            scratch_swiglu, // Reuse same buffer for output
+            self.config.ffn_dim,
+        )?;
+
+        // Step 13: Down projection
         gemm(
             engine,
             encoder,
@@ -382,7 +383,7 @@ impl TransformerBlock {
             self.config.hidden_dim,
         )?;
 
-        // Step 13: Residual connection 2 (output to final buffer)
+        // Step 14: Residual connection 2 (output to final buffer)
         add_tensors(
             engine,
             encoder,
