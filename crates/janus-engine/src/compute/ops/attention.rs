@@ -49,23 +49,21 @@ struct SoftmaxUniforms {
 /// For GQA, each KV head is shared across multiple query heads (num_heads / num_kv_heads).
 ///
 /// # Arguments
-/// * `engine` - The compute engine containing GPU device and queue
-/// * `encoder` - Shared command encoder for recording GPU operations
-/// * `pipeline_cache` - Pre-compiled pipeline cache
-/// * `query` - GPU buffer containing query tensor [num_heads * head_dim]
-/// * `key_cache` - GPU buffer containing all cached keys
-/// * `value_cache` - GPU buffer containing all cached values
-/// * `output` - Pre-allocated output buffer [num_heads * head_dim]
-/// * `layer_idx` - The transformer layer index (for cache segmentation)
-/// * `seq_len` - Current sequence length (number of tokens in cache)
-/// * `max_seq_len` - Maximum sequence length supported by cache
-/// * `num_heads` - Number of query attention heads
-/// * `num_kv_heads` - Number of key-value attention heads (for GQA)
+/// * `engine` - The compute engine providing GPU access
+/// * `encoder` - Shared command encoder for batching operations
+/// * `pipeline_cache` - Pre-compiled shader cache
+/// * `query` - Query tensor [num_heads, head_dim]
+/// * `key_cache` - Segmented key cache [num_layers, max_seq_len, num_kv_heads, head_dim]
+/// * `value_cache` - Segmented value cache [num_layers, max_seq_len, num_kv_heads, head_dim]
+/// * `output` - Output tensor [num_heads, head_dim]
+/// * `scores` - Pre-allocated buffer for attention scores [num_heads * max_seq_len]
+/// * `probs` - Pre-allocated buffer for attention probabilities [num_heads * max_seq_len]
+/// * `layer_idx` - Layer index for cache segmentation
+/// * `seq_len` - Current sequence length (number of tokens processed so far, including current)
+/// * `max_seq_len` - Maximum sequence length for cache sizing
+/// * `num_heads` - Number of query heads
+/// * `num_kv_heads` - Number of key/value heads (GQA support)
 /// * `head_dim` - Dimension of each attention head
-///
-/// # Note
-/// This function records commands to the encoder but does NOT submit them.
-/// The caller is responsible for submitting the encoder.
 ///
 /// # Shaders
 /// Uses `shaders/attention.wgsl` and `shaders/softmax.wgsl` for compute operations.
@@ -77,6 +75,8 @@ pub fn compute_attention(
     key_cache: &wgpu::Buffer,
     value_cache: &wgpu::Buffer,
     output: &wgpu::Buffer,
+    scores: &wgpu::Buffer,
+    probs: &wgpu::Buffer,
     layer_idx: u32,
     seq_len: u32,
     max_seq_len: u32,
@@ -90,21 +90,6 @@ pub fn compute_attention(
     // Use cached shaders
     let attention_shader = &pipeline_cache.attention_shader;
     let softmax_shader = &pipeline_cache.softmax_shader;
-
-    // Create intermediate buffers (TODO: these should eventually be pre-allocated)
-    let scores_size = (num_heads * seq_len * std::mem::size_of::<f32>() as u32) as u64;
-    let scores = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("attention_scores"),
-        size: scores_size,
-        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-        mapped_at_creation: false,
-    });
-    let probs = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("attention_probs"),
-        size: scores_size,
-        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-        mapped_at_creation: false,
-    });
 
     // Create uniforms
     let attention_uniforms = AttentionUniforms {

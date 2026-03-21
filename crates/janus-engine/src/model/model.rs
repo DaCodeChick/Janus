@@ -178,6 +178,13 @@ pub struct Model {
     /// FFN output buffer [hidden_dim]
     scratch_ffn_out: Buffer,
 
+    // === Attention intermediate buffers ===
+    /// Attention scores buffer (before softmax) [num_heads * max_seq_len]
+    scores_buf: Buffer,
+
+    /// Attention probabilities buffer (after softmax) [num_heads * max_seq_len]
+    probs_buf: Buffer,
+
     // === Pipeline Cache: Pre-compiled Shaders and Pipelines ===
     /// Cached GPU pipelines for all operations (eliminates recompilation overhead)
     pipeline_cache: PipelineCache,
@@ -358,6 +365,21 @@ impl Model {
             mapped_at_creation: false,
         });
 
+        // Attention intermediate buffers [num_heads * max_seq_len]
+        let scores_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("scores_buf"),
+            size: (config.num_heads * config.max_seq_len * std::mem::size_of::<f32>() as u32) as u64,
+            usage: buffer_usage,
+            mapped_at_creation: false,
+        });
+
+        let probs_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("probs_buf"),
+            size: (config.num_heads * config.max_seq_len * std::mem::size_of::<f32>() as u32) as u64,
+            usage: buffer_usage,
+            mapped_at_creation: false,
+        });
+
         tracing::info!(
             "Allocated scratch buffers: hidden={}KB, q/k/v={}KB, ffn={}KB, logits={}KB",
             (config.hidden_dim * 4 * 2) / 1024, // 2 hidden state buffers
@@ -404,6 +426,8 @@ impl Model {
             scratch_ffn_norm,
             scratch_swiglu,
             scratch_ffn_out,
+            scores_buf,
+            probs_buf,
             pipeline_cache,
         })
     }
@@ -629,6 +653,8 @@ impl Model {
                 &self.up_buf,
                 &self.scratch_swiglu,
                 &self.scratch_ffn_out,
+                &self.scores_buf,
+                &self.probs_buf,
                 &mut self.cache,
                 layer_idx as u32,
                 seq_pos,

@@ -1,14 +1,16 @@
 //! Token sampling and decoding
 //!
 //! This module implements token sampling strategies for autoregressive text generation.
-//! Currently supports:
+//! Supports:
 //! - Greedy decoding (argmax selection)
-//!
-//! Future enhancements will include:
 //! - Temperature sampling
 //! - Top-k sampling
 //! - Top-p (nucleus) sampling
+//! - Configurable repetition penalty
+//!
+//! Future enhancements:
 //! - Beam search
+//! - Mirostat sampling
 
 use crate::compute::{ComputeEngine, Result};
 
@@ -21,6 +23,8 @@ pub struct SamplerConfig {
     pub top_k: u32,
     /// Top-p (nucleus) filtering (1.0 = disabled)
     pub top_p: f32,
+    /// Repetition penalty (1.0 = no penalty, higher values penalize repetition more)
+    pub repetition_penalty: f32,
 }
 
 impl Default for SamplerConfig {
@@ -29,6 +33,7 @@ impl Default for SamplerConfig {
             temperature: 0.0, // Greedy decoding by default
             top_k: 0,
             top_p: 1.0,
+            repetition_penalty: 1.15,
         }
     }
 }
@@ -65,7 +70,7 @@ impl Sampler {
     /// This function:
     /// 1. Reads the logits buffer from GPU to CPU
     /// 2. Applies repetition penalty based on context
-    /// 3. Applies the sampling strategy (currently greedy/argmax)
+    /// 3. Applies the sampling strategy (greedy, temperature, top-k, top-p)
     /// 4. Returns the selected token ID
     ///
     /// # Arguments
@@ -76,9 +81,9 @@ impl Sampler {
     /// # Returns
     /// The selected token ID (0 to vocab_size - 1)
     ///
-    /// # Implementation Note
-    /// Currently implements greedy decoding (argmax) with repetition penalty.
-    /// Future versions will support temperature sampling, top-k, and top-p.
+    /// # Sampling Strategies
+    /// - If temperature == 0.0: Greedy decoding (argmax)
+    /// - If temperature > 0.0: Temperature sampling with optional top-k and top-p filtering
     pub async fn sample(
         &self,
         engine: &ComputeEngine,
@@ -96,11 +101,8 @@ impl Sampler {
             // Greedy decoding: select token with highest logit
             self.argmax(&logits)
         } else {
-            // TODO: Implement temperature sampling, top-k, top-p
-            tracing::warn!(
-                "Temperature sampling not yet implemented, falling back to greedy"
-            );
-            self.argmax(&logits)
+            // Temperature sampling with optional top-k and top-p filtering
+            self.sample_with_temperature(&mut logits)
         };
 
         Ok(token_id)
@@ -181,7 +183,7 @@ impl Sampler {
     /// - If its logit is positive, divide by penalty (reduces probability)
     /// - If its logit is negative, multiply by penalty (makes it more negative)
     fn apply_repetition_penalty(&self, logits: &mut [f32], context: &[u32]) {
-        let rep_penalty = 1.15_f32;
+        let rep_penalty = self.config.repetition_penalty;
         
         for &token_id in context {
             let idx = token_id as usize;
@@ -194,6 +196,165 @@ impl Sampler {
                 }
             }
         }
+    }
+
+    /// Sample using temperature with optional top-k and top-p filtering
+    ///
+    /// # Arguments
+    /// * `logits` - Mutable slice of logit values
+    ///
+    /// # Returns
+    /// Sampled token ID
+    fn sample_with_temperature(&self, logits: &mut [f32]) -> u32 {
+        // Apply top-k filtering if enabled
+        if self.config.top_k > 0 {
+            self.apply_top_k(logits, self.config.top_k);
+        }
+
+        // Apply temperature scaling
+        let temperature = self.config.temperature;
+        for logit in logits.iter_mut() {
+            *logit /= temperature;
+        }
+
+        // Convert logits to probabilities using softmax
+        let probs = self.softmax(logits);
+
+        // Apply top-p (nucleus) filtering if enabled
+        let probs = if self.config.top_p < 1.0 {
+            self.apply_top_p(&probs, self.config.top_p)
+        } else {
+            probs
+        };
+
+        // Sample from the probability distribution
+        self.sample_from_distribution(&probs)
+    }
+
+    /// Apply top-k filtering by setting logits of tokens outside top-k to -infinity
+    ///
+    /// # Arguments
+    /// * `logits` - Mutable slice of logit values
+    /// * `k` - Number of top tokens to keep
+    fn apply_top_k(&self, logits: &mut [f32], k: u32) {
+        if k == 0 || k >= logits.len() as u32 {
+            return;
+        }
+
+        // Find the k-th largest value
+        let mut indices: Vec<usize> = (0..logits.len()).collect();
+        indices.sort_by(|&a, &b| {
+            logits[b].partial_cmp(&logits[a]).unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        // Set all values outside top-k to negative infinity
+        let threshold_idx = indices[k as usize - 1];
+        let threshold = logits[threshold_idx];
+        
+        for (i, logit) in logits.iter_mut().enumerate() {
+            if *logit < threshold && i != threshold_idx {
+                *logit = f32::NEG_INFINITY;
+            }
+        }
+    }
+
+    /// Apply top-p (nucleus) filtering
+    ///
+    /// # Arguments
+    /// * `probs` - Probability distribution
+    /// * `p` - Cumulative probability threshold
+    ///
+    /// # Returns
+    /// Filtered probability distribution
+    fn apply_top_p(&self, probs: &[f32], p: f32) -> Vec<f32> {
+        // Create sorted indices by probability (descending)
+        let mut indices: Vec<usize> = (0..probs.len()).collect();
+        indices.sort_by(|&a, &b| {
+            probs[b].partial_cmp(&probs[a]).unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        // Find cumulative probability cutoff
+        let mut cumsum = 0.0;
+        let mut cutoff_idx = probs.len();
+        for (i, &idx) in indices.iter().enumerate() {
+            cumsum += probs[idx];
+            if cumsum >= p {
+                cutoff_idx = i + 1;
+                break;
+            }
+        }
+
+        // Create filtered distribution
+        let mut filtered = vec![0.0; probs.len()];
+        let mut sum = 0.0;
+        for &idx in indices.iter().take(cutoff_idx) {
+            filtered[idx] = probs[idx];
+            sum += probs[idx];
+        }
+
+        // Renormalize
+        if sum > 0.0 {
+            for prob in filtered.iter_mut() {
+                *prob /= sum;
+            }
+        }
+
+        filtered
+    }
+
+    /// Compute softmax of logits to get probabilities
+    ///
+    /// # Arguments
+    /// * `logits` - Slice of logit values
+    ///
+    /// # Returns
+    /// Probability distribution
+    fn softmax(&self, logits: &[f32]) -> Vec<f32> {
+        // Find max for numerical stability
+        let max_logit = logits.iter()
+            .fold(f32::NEG_INFINITY, |max, &x| if x > max { x } else { max });
+
+        // Compute exp(logit - max) and sum
+        let mut exp_sum = 0.0;
+        let exp_logits: Vec<f32> = logits.iter()
+            .map(|&x| {
+                if x.is_finite() {
+                    let exp_val = (x - max_logit).exp();
+                    exp_sum += exp_val;
+                    exp_val
+                } else {
+                    0.0
+                }
+            })
+            .collect();
+
+        // Normalize to get probabilities
+        exp_logits.iter().map(|&x| x / exp_sum).collect()
+    }
+
+    /// Sample a token from a probability distribution
+    ///
+    /// # Arguments
+    /// * `probs` - Probability distribution
+    ///
+    /// # Returns
+    /// Sampled token ID
+    fn sample_from_distribution(&self, probs: &[f32]) -> u32 {
+        use rand::Rng;
+        
+        let mut rng = rand::thread_rng();
+        let random_value: f32 = rng.r#gen();
+        
+        let mut cumsum = 0.0;
+        for (i, &prob) in probs.iter().enumerate() {
+            cumsum += prob;
+            if random_value < cumsum {
+                return i as u32;
+            }
+        }
+        
+        // Fallback to last token (shouldn't happen with proper probabilities)
+        (probs.len() - 1) as u32
     }
 
     /// Find the index of the maximum value (argmax)

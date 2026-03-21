@@ -41,6 +41,9 @@ tracing-subscriber.workspace = true
 # Numerics
 half.workspace = true
 
+# Random number generation
+rand.workspace = true
+
 # Tokenization
 tokenizers = "0.20"
 

@@ -14,12 +14,6 @@
 ## Medium Priority
 
 ### Performance Optimizations
-- [ ] **Pre-allocate attention intermediate buffers**
-  - Currently creating `scores` and `probs` buffers dynamically in `compute_attention()`
-  - Should be pre-allocated in Model struct like other scratch buffers
-  - See: `crates/janus-engine/src/compute/ops/attention.rs` (lines 95-115)
-  - Expected benefit: Eliminate last remaining dynamic allocations
-
 - [ ] **Implement FP16 inference support**
   - Most models are distributed in FP16 format
   - Current implementation loads everything as FP32
@@ -30,25 +24,6 @@
   - Consider pre-computing sin/cos values for common positions
   - Cache in lookup table instead of computing every time
   - See: `crates/janus-engine/src/compute/shaders/rope.wgsl`
-
-### Sampling Improvements
-- [ ] **Implement temperature sampling**
-  - Currently only greedy (argmax) decoding is supported
-  - Add temperature parameter to SamplerConfig
-  - See: `crates/janus-engine/src/model/sampler.rs::sample()` (line 95-104)
-
-- [ ] **Implement top-k sampling**
-  - Filter to top-k most likely tokens before sampling
-  - See: `crates/janus-engine/src/model/sampler.rs`
-
-- [ ] **Implement top-p (nucleus) sampling**
-  - Filter to smallest set of tokens with cumulative probability > p
-  - See: `crates/janus-engine/src/model/sampler.rs`
-
-- [ ] **Make repetition penalty configurable**
-  - Currently hardcoded to 1.15 in `apply_repetition_penalty()`
-  - Should be part of SamplerConfig
-  - See: `crates/janus-engine/src/model/sampler.rs` (line 184)
 
 ### Model Support
 - [ ] **Add support for more model architectures**
@@ -116,17 +91,6 @@
 - [ ] **Add KV cache compression**
   - Compress old KV cache entries to extend context length
   - See: `crates/janus-engine/src/compute/cache.rs`
-
-## Completed ✓
-
-- [x] Pipeline cache infrastructure (eliminates shader recompilation)
-- [x] Static computation graph (1 GPU submission per token)
-- [x] Tiled GEMM with shared memory (5-10x speedup)
-- [x] Buffer usage conflict fixes (SwiGLU activation)
-- [x] Generation stop reason messages (debug truncation issues)
-- [x] High-precision benchmarking (tok/s metrics)
-- [x] Comprehensive README.md
-
 ---
 
-**Note**: This TODO list is living documentation. Add items as needed and move completed items to the "Completed" section.
+**Note**: This TODO list is living documentation. Add items as needed and delete completed items

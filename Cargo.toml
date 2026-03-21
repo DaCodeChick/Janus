@@ -64,6 +64,9 @@ byteorder = "1.5.0"
 # Numerics
 half = "2.7.1"
 
+# Random number generation
+rand = "0.8"
+
 [profile.release]
 opt-level = 3
 lto = "thin"

@@ -139,6 +139,8 @@ impl TransformerBlock {
     /// * `scratch_up` - Pre-allocated buffer for up projection [ffn_dim]
     /// * `scratch_swiglu` - Pre-allocated buffer for SwiGLU output [ffn_dim]
     /// * `scratch_ffn_out` - Pre-allocated buffer for FFN output [hidden_dim]
+    /// * `scores_buf` - Pre-allocated buffer for attention scores [num_heads * max_seq_len]
+    /// * `probs_buf` - Pre-allocated buffer for attention probs [num_heads * max_seq_len]
     /// * `cache` - KV cache for storing/retrieving attention keys and values
     /// * `layer_idx` - The transformer layer index (for cache segmentation)
     /// * `seq_pos` - Position in the sequence (for RoPE)
@@ -167,6 +169,8 @@ impl TransformerBlock {
         scratch_up: &wgpu::Buffer,
         scratch_swiglu: &wgpu::Buffer,
         scratch_ffn_out: &wgpu::Buffer,
+        scores_buf: &wgpu::Buffer,
+        probs_buf: &wgpu::Buffer,
         cache: &mut KVCache,
         layer_idx: u32,
         seq_pos: u32,
@@ -275,6 +279,8 @@ impl TransformerBlock {
             key_cache,
             value_cache,
             scratch_attn_out,
+            scores_buf,
+            probs_buf,
             layer_idx,
             current_seq_len,
             cache.max_seq_len(),
