@@ -61,7 +61,7 @@
 
 use crate::compute::cache::KVCache;
 use crate::compute::ops::{gemm_static, rmsnorm_static};
-use crate::compute::{ComputeEngine, Result};
+use crate::compute::{ComputeEngine, PipelineCache, Result};
 use crate::model::{block::TransformerBlock, sampler::Sampler, tokenizer::Tokenizer};
 use wgpu::Buffer;
 
@@ -177,6 +177,10 @@ pub struct Model {
 
     /// FFN output buffer [hidden_dim]
     scratch_ffn_out: Buffer,
+
+    // === Pipeline Cache: Pre-compiled Shaders and Pipelines ===
+    /// Cached GPU pipelines for all operations (eliminates recompilation overhead)
+    pipeline_cache: PipelineCache,
 }
 
 impl Model {
@@ -362,6 +366,10 @@ impl Model {
             (config.vocab_size * 4) / 1024 // logits
         );
 
+        // === Pipeline Cache: Pre-compile all shaders ===
+        tracing::info!("Pre-compiling GPU shaders and pipelines...");
+        let pipeline_cache = PipelineCache::new(device);
+
         tracing::info!(
             "Initialized model: {} layers, hidden_dim={}, vocab_size={}",
             config.num_layers,
@@ -396,6 +404,7 @@ impl Model {
             scratch_ffn_norm,
             scratch_swiglu,
             scratch_ffn_out,
+            pipeline_cache,
         })
     }
 
