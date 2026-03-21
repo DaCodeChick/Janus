@@ -32,15 +32,22 @@
   - See: `crates/janus-engine/src/compute/ops/quantized.rs`
 
 ### Error Handling
-- [ ] **Better error messages for model loading failures**
-  - Detect common issues (wrong architecture, missing weights, etc.)
-  - Provide helpful suggestions to users
-  - See: `crates/janus-engine/src/loaders/`
+- [x] **Better error messages for model loading failures**
+  - ✓ Enhanced GGUFError with detailed diagnostics and suggestions
+  - ✓ Enhanced FormatError with helpful error messages
+  - ✓ Detect common issues (wrong architecture, missing weights, tensor mismatches)
+  - ✓ Provide helpful suggestions to users with expected vs actual values
+  - See: `crates/janus-engine/src/formats/gguf/error.rs`, `crates/janus-engine/src/formats/mod.rs`
 
-- [ ] **Add validation for model configuration**
-  - Check that dimensions match between config and weights
-  - Verify vocabulary size matches tokenizer
-  - See: `crates/janus-engine/src/model/model.rs::new()`
+- [x] **Add validation for model configuration**
+  - ✓ Enhanced ConfigError with actionable error messages
+  - ✓ Comprehensive validation in `HuggingFaceConfig::validate()`
+  - ✓ Check dimensions match (head_dim divisibility, GQA constraints)
+  - ✓ Verify vocabulary size matches between tokenizer, sampler, and model
+  - ✓ Validate tensor buffer sizes match expected dimensions
+  - ✓ Architecture whitelist with helpful unsupported architecture errors
+  - ✓ Integration tests for all validation scenarios
+  - See: `crates/janus-engine/src/model/config.rs`, `crates/janus-engine/src/model/model.rs`, `crates/janus-engine/tests/error_handling.rs`
 
 ## Low Priority
 
@@ -57,29 +64,7 @@
   - Add performance tuning guide
   - See: `README.md` and crate-level docs
 
-### Testing
-- [x] **Add integration tests** ✅ COMPLETED
-  - Added comprehensive test suite for sampling strategies
-  - Tests for greedy, temperature, top-k, top-p, beam search configuration
-  - Numerical stability tests for log-softmax
-  - See: `crates/janus-engine/tests/generation_integration.rs`
-
-- [x] **Add benchmarking suite** ✅ COMPLETED
-  - Systematic performance benchmarks for sampling operations
-  - Benchmarks for argmax, top-k, top-p, softmax, log-softmax
-  - Configurable for different vocabulary sizes
-  - See: `crates/janus-engine/benches/sampling_bench.rs`
-  - Run with: `cargo bench -p janus-engine --bench sampling_bench`
-
 ### Features
-- [x] **Implement beam search** ✅ COMPLETED (infrastructure ready)
-  - Added `beam_width` parameter to `SamplerConfig`
-  - Implemented `top_k_tokens()` for beam expansion
-  - Implemented numerically stable `log_softmax()` for scoring
-  - Added `BeamHypothesis` struct for tracking beam candidates
-  - Infrastructure ready for full beam search generation
-  - See: `crates/janus-engine/src/model/sampler.rs`
-
 - [ ] **Add batched inference support**
   - Process multiple prompts in parallel
   - Requires batched GEMM operations

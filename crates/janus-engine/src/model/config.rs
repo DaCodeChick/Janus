@@ -11,17 +11,20 @@ use thiserror::Error;
 /// Errors that can occur when loading model configuration
 #[derive(Error, Debug)]
 pub enum ConfigError {
-    #[error("Failed to read config file: {0}")]
+    #[error("Failed to read config file: {0}\n\nSuggestions:\n  - Verify the file path exists\n  - Check file permissions\n  - If using a directory path, ensure config.json exists inside")]
     IoError(#[from] std::io::Error),
 
-    #[error("Failed to parse config JSON: {0}")]
+    #[error("Failed to parse config JSON: {0}\n\nSuggestions:\n  - Verify the file is valid JSON (use a JSON validator)\n  - Check for trailing commas or syntax errors\n  - Compare with a known-good config.json")]
     ParseError(#[from] serde_json::Error),
 
-    #[error("Missing required field: {0}")]
+    #[error("Missing required field: {0}\n\nRequired fields:\n  - hidden_size\n  - num_hidden_layers\n  - num_attention_heads\n  - vocab_size\n\nSuggestions:\n  - Add the missing field to your config.json\n  - Use a complete config.json from HuggingFace model repo")]
     MissingField(String),
 
-    #[error("Invalid configuration: {0}")]
+    #[error("Invalid configuration: {0}\n\nSuggestions:\n  - Verify all dimensions are positive integers\n  - Check that hidden_size is divisible by num_attention_heads\n  - Ensure num_key_value_heads divides num_attention_heads evenly (for GQA)")]
     InvalidConfig(String),
+
+    #[error("Unsupported architecture: {architecture}\n\nSupported architectures:\n  - LlamaForCausalLM (LLaMA, Mistral)\n  - MistralForCausalLM\n  - GPTNeoXForCausalLM (TinyLlama, Pythia)\n\nGot architecture: {architecture}\n\nSuggestions:\n  - Check if this architecture is supported in the latest Janus version\n  - Some architectures may work with compatible configs (e.g., Mistral uses LLaMA architecture)\n  - File an issue on GitHub if you need support for this architecture")]
+    UnsupportedArchitecture { architecture: String },
 }
 
 /// Result type for config operations
@@ -122,7 +125,8 @@ impl HuggingFaceConfig {
     }
 
     /// Validate that all required fields are present and valid
-    fn validate(&self) -> Result<()> {
+    pub fn validate(&self) -> Result<()> {
+        // Check positive values
         if self.hidden_size == 0 {
             return Err(ConfigError::InvalidConfig(
                 "hidden_size must be greater than 0".into(),
@@ -150,8 +154,61 @@ impl HuggingFaceConfig {
         // Check that hidden_size is divisible by num_attention_heads
         if self.hidden_size % self.num_attention_heads != 0 {
             return Err(ConfigError::InvalidConfig(format!(
-                "hidden_size ({}) must be divisible by num_attention_heads ({})",
-                self.hidden_size, self.num_attention_heads
+                "hidden_size ({}) must be divisible by num_attention_heads ({})\nhead_dim would be {}.{} which is not an integer",
+                self.hidden_size, 
+                self.num_attention_heads,
+                self.hidden_size / self.num_attention_heads,
+                self.hidden_size % self.num_attention_heads
+            )));
+        }
+
+        // Check that num_attention_heads is divisible by num_key_value_heads (for GQA)
+        let num_kv_heads = self.num_kv_heads();
+        if self.num_attention_heads % num_kv_heads != 0 {
+            return Err(ConfigError::InvalidConfig(format!(
+                "num_attention_heads ({}) must be divisible by num_key_value_heads ({})\nFor Grouped Query Attention, each KV head must serve an equal number of Q heads",
+                self.num_attention_heads,
+                num_kv_heads
+            )));
+        }
+
+        // Validate architecture if specified
+        if let Some(ref archs) = self.architectures {
+            let supported_archs = [
+                "LlamaForCausalLM",
+                "MistralForCausalLM",
+                "GPTNeoXForCausalLM",
+            ];
+
+            if !archs.is_empty() {
+                let arch = &archs[0];
+                if !supported_archs.contains(&arch.as_str()) {
+                    return Err(ConfigError::UnsupportedArchitecture {
+                        architecture: arch.clone(),
+                    });
+                }
+            }
+        }
+
+        // Validate reasonable ranges (catch obviously wrong values)
+        if self.hidden_size > 32768 {
+            return Err(ConfigError::InvalidConfig(format!(
+                "hidden_size ({}) seems unreasonably large (>32768)\nPlease verify this is correct",
+                self.hidden_size
+            )));
+        }
+
+        if self.num_hidden_layers > 256 {
+            return Err(ConfigError::InvalidConfig(format!(
+                "num_hidden_layers ({}) seems unreasonably large (>256)\nPlease verify this is correct",
+                self.num_hidden_layers
+            )));
+        }
+
+        if self.vocab_size > 1_000_000 {
+            return Err(ConfigError::InvalidConfig(format!(
+                "vocab_size ({}) seems unreasonably large (>1M)\nPlease verify this is correct",
+                self.vocab_size
             )));
         }
 

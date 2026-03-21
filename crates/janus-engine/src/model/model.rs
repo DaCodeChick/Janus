@@ -198,7 +198,7 @@ pub struct Model {
 }
 
 impl Model {
-    /// Create a new model
+    /// Create a new model with comprehensive validation
     ///
     /// # Arguments
     /// * `config` - Model configuration
@@ -220,14 +220,88 @@ impl Model {
         output_norm_weight: Buffer,
         lm_head_weight: Buffer,
     ) -> Result<Self> {
-        // Verify block count matches config
+        // === Validation: Configuration ===
+        tracing::info!("Validating model configuration...");
+        Self::validate_config(&config)?;
+        
+        // === Validation: Block Count ===
         if blocks.len() != config.num_layers as usize {
             return Err(crate::compute::ComputeError::InvalidDimensions(format!(
-                "Block count mismatch: expected {}, got {}",
+                "Block count mismatch: expected {} layers, got {} blocks\n\nSuggestions:\n  - Verify the model file contains all layers\n  - Check if the config.json matches this model\n  - Some models may use a different num_hidden_layers value",
                 config.num_layers,
                 blocks.len()
             )));
         }
+        
+        // === Validation: Tokenizer Vocabulary Size ===
+        let tokenizer_vocab_size = tokenizer.vocab_size() as u32;
+        if tokenizer_vocab_size != config.vocab_size {
+            tracing::warn!(
+                "Tokenizer vocab size ({}) differs from model config ({}). This may cause issues.",
+                tokenizer_vocab_size,
+                config.vocab_size
+            );
+            
+            // Allow if tokenizer is larger (common case - model uses subset)
+            if tokenizer_vocab_size < config.vocab_size {
+                return Err(crate::compute::ComputeError::InvalidDimensions(format!(
+                    "Tokenizer vocab size ({}) is smaller than model vocab size ({})\n\nSuggestions:\n  - Verify you're using the correct tokenizer.json for this model\n  - Check the model card for the correct tokenizer\n  - The tokenizer must have at least {} tokens",
+                    tokenizer_vocab_size,
+                    config.vocab_size,
+                    config.vocab_size
+                )));
+            }
+        }
+        
+        // === Validation: Sampler Vocabulary Size ===
+        if sampler.vocab_size() != config.vocab_size {
+            return Err(crate::compute::ComputeError::InvalidDimensions(format!(
+                "Sampler vocab size ({}) does not match model vocab size ({})\n\nSuggestions:\n  - Recreate the sampler with the correct vocab_size: Sampler::greedy({})",
+                sampler.vocab_size(),
+                config.vocab_size,
+                config.vocab_size
+            )));
+        }
+        
+        // === Validation: Tensor Buffer Sizes ===
+        tracing::info!("Validating tensor buffer sizes...");
+        
+        // Token embedding table: [vocab_size × hidden_dim] × 4 bytes (F32)
+        let expected_emb_size = (config.vocab_size * config.hidden_dim * 4) as u64;
+        if token_embedding_table.size() != expected_emb_size {
+            return Err(crate::compute::ComputeError::InvalidDimensions(format!(
+                "Token embedding table size mismatch\nExpected: {} bytes ({} vocab × {} hidden × 4 bytes)\nActual: {} bytes\n\nSuggestions:\n  - Verify the config.json matches this model\n  - Check if vocab_size or hidden_size are incorrect\n  - The tensor may be quantized (not yet supported)",
+                expected_emb_size,
+                config.vocab_size,
+                config.hidden_dim,
+                token_embedding_table.size()
+            )));
+        }
+        
+        // Output norm weight: [hidden_dim] × 4 bytes (F32)
+        let expected_norm_size = (config.hidden_dim * 4) as u64;
+        if output_norm_weight.size() != expected_norm_size {
+            return Err(crate::compute::ComputeError::InvalidDimensions(format!(
+                "Output norm weight size mismatch\nExpected: {} bytes ({} hidden × 4 bytes)\nActual: {} bytes\n\nSuggestions:\n  - Verify the config.json hidden_size is correct\n  - Check if the model uses a different norm implementation",
+                expected_norm_size,
+                config.hidden_dim,
+                output_norm_weight.size()
+            )));
+        }
+        
+        // LM head weight: [hidden_dim × vocab_size] × 4 bytes (F32)
+        let expected_lm_head_size = (config.hidden_dim * config.vocab_size * 4) as u64;
+        if lm_head_weight.size() != expected_lm_head_size {
+            return Err(crate::compute::ComputeError::InvalidDimensions(format!(
+                "LM head weight size mismatch\nExpected: {} bytes ({} hidden × {} vocab × 4 bytes)\nActual: {} bytes\n\nSuggestions:\n  - Verify config.json vocab_size and hidden_size are correct\n  - Some models share embeddings with LM head (weight tying)\n  - The tensor may be quantized (not yet supported)",
+                expected_lm_head_size,
+                config.hidden_dim,
+                config.vocab_size,
+                lm_head_weight.size()
+            )));
+        }
+        
+        tracing::info!("✓ All validations passed");
 
         // Create KV cache (uses num_kv_heads for GQA support, segmented by layer)
         let cache = KVCache::new(
@@ -972,6 +1046,92 @@ impl Model {
     /// Reset the KV cache (for starting a new generation session)
     pub fn reset_cache(&mut self) {
         self.cache.reset();
+    }
+    
+    /// Validate model configuration for consistency
+    fn validate_config(config: &ModelConfig) -> Result<()> {
+        // Check basic constraints
+        if config.hidden_dim == 0 {
+            return Err(crate::compute::ComputeError::InvalidDimensions(
+                "hidden_dim must be greater than 0".into()
+            ));
+        }
+        
+        if config.num_layers == 0 {
+            return Err(crate::compute::ComputeError::InvalidDimensions(
+                "num_layers must be greater than 0".into()
+            ));
+        }
+        
+        if config.num_heads == 0 {
+            return Err(crate::compute::ComputeError::InvalidDimensions(
+                "num_heads must be greater than 0".into()
+            ));
+        }
+        
+        if config.num_kv_heads == 0 {
+            return Err(crate::compute::ComputeError::InvalidDimensions(
+                "num_kv_heads must be greater than 0".into()
+            ));
+        }
+        
+        if config.vocab_size == 0 {
+            return Err(crate::compute::ComputeError::InvalidDimensions(
+                "vocab_size must be greater than 0".into()
+            ));
+        }
+        
+        // Validate head_dim consistency
+        let computed_head_dim = config.hidden_dim / config.num_heads;
+        if computed_head_dim != config.head_dim {
+            return Err(crate::compute::ComputeError::InvalidDimensions(format!(
+                "head_dim mismatch: config specifies {}, but hidden_dim / num_heads = {} / {} = {}\n\nSuggestions:\n  - Set head_dim to {} in your config\n  - Or adjust hidden_dim to be {} (num_heads × head_dim)",
+                config.head_dim,
+                config.hidden_dim,
+                config.num_heads,
+                computed_head_dim,
+                computed_head_dim,
+                config.num_heads * config.head_dim
+            )));
+        }
+        
+        // Validate hidden_dim is divisible by num_heads
+        if config.hidden_dim % config.num_heads != 0 {
+            return Err(crate::compute::ComputeError::InvalidDimensions(format!(
+                "hidden_dim ({}) must be divisible by num_heads ({})\nhead_dim would be {}.{} which is not an integer",
+                config.hidden_dim,
+                config.num_heads,
+                config.hidden_dim / config.num_heads,
+                config.hidden_dim % config.num_heads
+            )));
+        }
+        
+        // Validate GQA configuration
+        if config.num_heads % config.num_kv_heads != 0 {
+            return Err(crate::compute::ComputeError::InvalidDimensions(format!(
+                "num_heads ({}) must be divisible by num_kv_heads ({})\nFor Grouped Query Attention, each KV head must serve equal Q heads\nQ heads per KV head would be {}.{}",
+                config.num_heads,
+                config.num_kv_heads,
+                config.num_heads / config.num_kv_heads,
+                config.num_heads % config.num_kv_heads
+            )));
+        }
+        
+        // Validate reasonable ranges
+        if config.max_seq_len == 0 {
+            return Err(crate::compute::ComputeError::InvalidDimensions(
+                "max_seq_len must be greater than 0".into()
+            ));
+        }
+        
+        if config.max_seq_len > 131072 {
+            tracing::warn!(
+                "max_seq_len ({}) is very large (>128K). This will use significant memory.",
+                config.max_seq_len
+            );
+        }
+        
+        Ok(())
     }
 }
 

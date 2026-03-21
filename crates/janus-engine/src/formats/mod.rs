@@ -88,23 +88,36 @@ pub use safetensors::SafetensorsFile;
 use std::collections::HashMap;
 use thiserror::Error;
 
-/// Errors that can occur during model loading
+/// Errors that can occur during model loading with helpful diagnostics
 #[derive(Debug, Error)]
 pub enum FormatError {
-    #[error("IO error: {0}")]
+    #[error("IO error while loading model: {0}\n\nSuggestions:\n  - Check file permissions (readable?)\n  - Verify the file path is correct\n  - Ensure sufficient disk space for memory mapping")]
     Io(#[from] std::io::Error),
 
-    #[error("Invalid file format: {0}")]
+    #[error("Invalid file format: {0}\n\nSuggestions:\n  - Check file extension (.gguf or .safetensors)\n  - Verify the file is not corrupted\n  - Try opening the file in a hex editor to check magic bytes")]
     InvalidFormat(String),
 
-    #[error("Parse error: {0}")]
+    #[error("Parse error: {0}\n\nSuggestions:\n  - The file may be corrupted or truncated\n  - Try re-downloading the model\n  - Verify the file size matches the expected size")]
     ParseError(String),
 
-    #[error("Tensor not found: {0}")]
-    TensorNotFound(String),
+    #[error("Tensor not found: '{tensor_name}'\n\nAvailable tensors (showing first 10):\n{available_tensors}\n\nSuggestions:\n  - The model may use a different naming convention\n  - Check if this is the correct model file for your architecture\n  - Try using glob patterns to find similar tensor names")]
+    TensorNotFound {
+        tensor_name: String,
+        available_tensors: String,
+    },
 
-    #[error("Invalid tensor data: {0}")]
+    #[error("Invalid tensor data: {0}\n\nSuggestions:\n  - The tensor data may be corrupted\n  - Verify the file was completely downloaded\n  - Check if the tensor type is supported")]
     InvalidTensorData(String),
+
+    #[error("Architecture mismatch: expected {expected}, but model appears to be {actual}\n\nDetected from metadata:\n{details}\n\nSuggestions:\n  - Verify you're using the correct config.json for this model\n  - Check the model card on HuggingFace for architecture details\n  - Try loading with a different architecture configuration")]
+    ArchitectureMismatch {
+        expected: String,
+        actual: String,
+        details: String,
+    },
+
+    #[error("Configuration validation failed: {0}\n\nSuggestions:\n  - Check the config.json file for correctness\n  - Verify dimensions are consistent (hidden_size % num_heads == 0)\n  - Compare with the model's documentation")]
+    ValidationError(String),
 }
 
 pub type Result<T> = std::result::Result<T, FormatError>;
@@ -188,11 +201,44 @@ pub trait ModelLoader {
     /// Returns tensor name -> TensorData with zero-copy byte slices
     fn tensors(&self) -> Result<HashMap<String, TensorData<'_>>>;
 
-    /// Get a specific tensor by name
+    /// Get a specific tensor by name with helpful error messages
     fn get_tensor(&self, name: &str) -> Result<TensorData<'_>> {
-        self.tensors()?
-            .remove(name)
-            .ok_or_else(|| FormatError::TensorNotFound(name.to_string()))
+        let all_tensors = self.tensors()?;
+
+        if let Some(tensor) = all_tensors.get(name) {
+            // Clone the TensorData since we can't move out of the HashMap
+            return Ok(TensorData {
+                name: tensor.name.clone(),
+                shape: tensor.shape.clone(),
+                dtype: tensor.dtype,
+                data: tensor.data,
+            });
+        }
+
+        // Tensor not found - provide helpful error with available tensors
+        let mut available: Vec<_> = all_tensors.keys().collect();
+        available.sort();
+
+        let available_list = if available.len() <= 10 {
+            available
+                .iter()
+                .map(|s| format!("  - {}", s))
+                .collect::<Vec<_>>()
+                .join("\n")
+        } else {
+            let first_10 = available
+                .iter()
+                .take(10)
+                .map(|s| format!("  - {}", s))
+                .collect::<Vec<_>>()
+                .join("\n");
+            format!("{}\n  ... and {} more", first_10, available.len() - 10)
+        };
+
+        Err(FormatError::TensorNotFound {
+            tensor_name: name.to_string(),
+            available_tensors: available_list,
+        })
     }
 
     /// Get metadata value by key (if supported by the format)
