@@ -141,6 +141,12 @@ pub struct Model {
     /// Value projection buffer [num_kv_heads * head_dim]
     v_buf: Buffer,
 
+    /// Rotated query buffer (after RoPE) [num_heads * head_dim]
+    q_rot_buf: Buffer,
+
+    /// Rotated key buffer (after RoPE) [num_kv_heads * head_dim]
+    k_rot_buf: Buffer,
+
     /// Attention output buffer [num_heads * head_dim]
     attn_out_buf: Buffer,
 
@@ -259,6 +265,21 @@ impl Model {
             mapped_at_creation: false,
         });
 
+        // Rotated Q and K buffers (after RoPE)
+        let q_rot_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("q_rot_buf"),
+            size: (config.num_heads * config.head_dim * std::mem::size_of::<f32>() as u32) as u64,
+            usage: buffer_usage,
+            mapped_at_creation: false,
+        });
+
+        let k_rot_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("k_rot_buf"),
+            size: (config.num_kv_heads * config.head_dim * std::mem::size_of::<f32>() as u32) as u64,
+            usage: buffer_usage,
+            mapped_at_creation: false,
+        });
+
         let attn_out_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("attn_out_buf"),
             size: (config.num_heads * config.head_dim * std::mem::size_of::<f32>() as u32) as u64,
@@ -363,6 +384,8 @@ impl Model {
             q_buf,
             k_buf,
             v_buf,
+            q_rot_buf,
+            k_rot_buf,
             attn_out_buf,
             gate_buf,
             up_buf,
@@ -583,6 +606,8 @@ impl Model {
                 &self.q_buf,
                 &self.k_buf,
                 &self.v_buf,
+                &self.q_rot_buf,
+                &self.k_rot_buf,
                 &self.attn_out_buf,
                 &self.scratch_proj_out,
                 &self.scratch_hidden1,

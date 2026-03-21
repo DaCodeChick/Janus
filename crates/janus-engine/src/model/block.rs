@@ -130,6 +130,8 @@ impl TransformerBlock {
     /// * `scratch_q` - Pre-allocated buffer for Q projection [num_heads * head_dim]
     /// * `scratch_k` - Pre-allocated buffer for K projection [num_kv_heads * head_dim]
     /// * `scratch_v` - Pre-allocated buffer for V projection [num_kv_heads * head_dim]
+    /// * `scratch_q_rot` - Pre-allocated buffer for rotated Q [num_heads * head_dim]
+    /// * `scratch_k_rot` - Pre-allocated buffer for rotated K [num_kv_heads * head_dim]
     /// * `scratch_attn_out` - Pre-allocated buffer for attention output [num_heads * head_dim]
     /// * `scratch_proj_out` - Pre-allocated buffer for projection output [hidden_dim]
     /// * `scratch_hidden1` - Pre-allocated buffer for first residual [hidden_dim]
@@ -155,6 +157,8 @@ impl TransformerBlock {
         scratch_q: &wgpu::Buffer,
         scratch_k: &wgpu::Buffer,
         scratch_v: &wgpu::Buffer,
+        scratch_q_rot: &wgpu::Buffer,
+        scratch_k_rot: &wgpu::Buffer,
         scratch_attn_out: &wgpu::Buffer,
         scratch_proj_out: &wgpu::Buffer,
         scratch_hidden1: &wgpu::Buffer,
@@ -219,12 +223,12 @@ impl TransformerBlock {
             kv_dim,
         )?;
 
-        // Step 3: Apply RoPE to Q and K (in-place)
+        // Step 3: Apply RoPE to Q and K (output to separate buffers)
         rope_static(
             engine,
             encoder,
             scratch_q,
-            scratch_q,  // in-place
+            scratch_q_rot,  // separate output buffer
             self.config.num_heads,
             self.config.head_dim,
             seq_pos,
@@ -235,7 +239,7 @@ impl TransformerBlock {
             engine,
             encoder,
             scratch_k,
-            scratch_k,  // in-place
+            scratch_k_rot,  // separate output buffer
             self.config.num_kv_heads,
             self.config.head_dim,
             seq_pos,
@@ -244,7 +248,7 @@ impl TransformerBlock {
 
         // Step 4: Update KV cache with new K and V
         // Note: This may still require a sync point - will address in Phase 7
-        cache.update_static(engine, encoder, scratch_k, scratch_v, layer_idx, seq_pos)?;
+        cache.update_static(engine, encoder, scratch_k_rot, scratch_v, layer_idx, seq_pos)?;
 
         // Step 5: Compute attention using cached K and V
         let (key_cache, value_cache) = cache.buffers();
@@ -253,7 +257,7 @@ impl TransformerBlock {
         compute_attention_static(
             engine,
             encoder,
-            scratch_q,
+            scratch_q_rot,  // Use rotated Q
             key_cache,
             value_cache,
             scratch_attn_out,
