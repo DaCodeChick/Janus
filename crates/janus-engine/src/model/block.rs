@@ -9,7 +9,7 @@
 
 use crate::compute::cache::KVCache;
 use crate::compute::ops::{
-    add_tensors, compute_attention_static, elementwise_mul, gemm_static, rmsnorm, rope, silu,
+    add_tensors, compute_attention_static, elementwise_mul, gemm, rmsnorm, rope, silu,
 };
 use crate::compute::pipeline_cache::PipelineCache;
 use crate::compute::{ComputeEngine, Result};
@@ -191,9 +191,10 @@ impl TransformerBlock {
         // For GQA: Q uses full hidden_dim, but K/V use num_kv_heads * head_dim
         let kv_dim = self.config.num_kv_heads * self.config.head_dim;
 
-        gemm_static(
+        gemm(
             engine,
             encoder,
+            pipeline_cache,
             scratch_input_norm,
             &self.attn_q_weight,
             scratch_q,
@@ -202,9 +203,10 @@ impl TransformerBlock {
             self.config.hidden_dim,
         )?;
 
-        gemm_static(
+        gemm(
             engine,
             encoder,
+            pipeline_cache,
             scratch_input_norm,
             &self.attn_k_weight,
             scratch_k,
@@ -213,9 +215,10 @@ impl TransformerBlock {
             kv_dim,
         )?;
 
-        gemm_static(
+        gemm(
             engine,
             encoder,
+            pipeline_cache,
             scratch_input_norm,
             &self.attn_v_weight,
             scratch_v,
@@ -280,9 +283,10 @@ impl TransformerBlock {
         )?;
 
         // Step 6: Output projection
-        gemm_static(
+        gemm(
             engine,
             encoder,
+            pipeline_cache,
             scratch_attn_out,
             &self.attn_output_weight,
             scratch_proj_out,
@@ -319,9 +323,10 @@ impl TransformerBlock {
         )?;
 
         // Step 9: Gate projection and activation (SiLU)
-        gemm_static(
+        gemm(
             engine,
             encoder,
+            pipeline_cache,
             scratch_ffn_norm,
             &self.ffn_gate_weight,
             scratch_gate,
@@ -340,9 +345,10 @@ impl TransformerBlock {
         )?;
 
         // Step 10: Up projection
-        gemm_static(
+        gemm(
             engine,
             encoder,
+            pipeline_cache,
             scratch_ffn_norm,
             &self.ffn_up_weight,
             scratch_up,
@@ -363,9 +369,10 @@ impl TransformerBlock {
         )?;
 
         // Step 12: Down projection
-        gemm_static(
+        gemm(
             engine,
             encoder,
+            pipeline_cache,
             scratch_swiglu,
             &self.ffn_down_weight,
             scratch_ffn_out,

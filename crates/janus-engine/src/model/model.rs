@@ -60,7 +60,7 @@
 //! ```
 
 use crate::compute::cache::KVCache;
-use crate::compute::ops::{gemm_static, rmsnorm};
+use crate::compute::ops::{gemm, rmsnorm};
 use crate::compute::{ComputeEngine, PipelineCache, Result};
 use crate::model::{block::TransformerBlock, sampler::Sampler, tokenizer::Tokenizer};
 use wgpu::Buffer;
@@ -657,9 +657,10 @@ impl Model {
 
         // Step 4: LM head projection: normalized output -> logits_buf
         tracing::debug!("Computing LM head projection");
-        gemm_static(
+        gemm(
             &self.engine,
             &mut encoder,
+            &self.pipeline_cache,
             &self.scratch_ffn_norm,
             &self.lm_head_weight,
             &self.logits_buf,
