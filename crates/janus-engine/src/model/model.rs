@@ -758,6 +758,10 @@ impl Model {
         print!("{}", prompt);
         std::io::Write::flush(&mut std::io::stdout()).ok();
 
+        // High-precision benchmark timing
+        let generation_start = std::time::Instant::now();
+        let mut tokens_generated = 0u32;
+
         for step in 0..max_tokens {
             // Check sequence length limit
             if seq_pos >= self.config.max_seq_len {
@@ -775,10 +779,19 @@ impl Model {
             
             tracing::debug!("Sampled token ID: {}", next_token);
 
-            // Check for EOS token
+            // Increment tokens generated counter
+            tokens_generated += 1;
+
+            // Check for EOS token (token ID 2 for LLaMA architectures)
+            if next_token == 2 {
+                tracing::info!("Generated EOS token (ID: 2), stopping generation");
+                break;
+            }
+            
+            // Also check tokenizer's EOS token if available
             if let Some(eos_id) = self.tokenizer.eos_token_id() {
                 if next_token == eos_id {
-                    tracing::info!("Generated EOS token, stopping generation");
+                    tracing::info!("Generated EOS token (ID: {}), stopping generation", eos_id);
                     break;
                 }
             }
@@ -807,6 +820,21 @@ impl Model {
         // Final newline
         println!();
 
+        // Calculate and print telemetry
+        let elapsed_secs = generation_start.elapsed().as_secs_f64();
+        let tps = if elapsed_secs > 0.0 {
+            (tokens_generated as f64) / elapsed_secs
+        } else {
+            0.0
+        };
+
+        println!("\n=== Telemetry ===");
+        println!("Tokens Generated: {}", tokens_generated);
+        println!("Elapsed Time: {:.3} seconds", elapsed_secs);
+        println!("Speed: {:.2} tok/s", tps);
+        println!("GPU Submissions per Token: 2 (1 forward pass + 1 logits copy)");
+        println!("=================");
+
         // Decode final text from all generated tokens
         let generated_text = self
             .tokenizer
@@ -814,8 +842,10 @@ impl Model {
             .map_err(|e| crate::compute::ComputeError::Other(format!("Final detokenization failed: {}", e)))?;
 
         tracing::info!(
-            "Generation complete: {} tokens generated",
-            generated_tokens.len()
+            "Generation complete: {} tokens generated in {:.3}s ({:.2} tok/s)",
+            generated_tokens.len(),
+            elapsed_secs,
+            tps
         );
 
         Ok(generated_text)
