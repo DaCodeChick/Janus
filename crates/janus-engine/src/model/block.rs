@@ -146,7 +146,7 @@ impl TransformerBlock {
     /// # Returns
     /// Result indicating success or error
     #[allow(clippy::too_many_arguments)]
-    pub fn forward_static(
+    pub fn forward(
         &self,
         engine: &ComputeEngine,
         encoder: &mut wgpu::CommandEncoder,

@@ -609,7 +609,7 @@ impl Model {
             };
 
             // Execute transformer block (all operations batched into shared encoder)
-            block.forward_static(
+            block.forward(
                 &self.engine,
                 &mut encoder,
                 &self.pipeline_cache,
