@@ -253,10 +253,10 @@ impl TransformerBlock {
         )?;
 
         // Step 4: Update KV cache with new K and V
-        // Note: This may still require a sync point - will address in Phase 7
-        cache.update_static(
+        cache.update(
             engine,
             encoder,
+            pipeline_cache,
             scratch_k_rot,
             scratch_v,
             layer_idx,
