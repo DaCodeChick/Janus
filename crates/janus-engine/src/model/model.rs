@@ -567,13 +567,16 @@ impl Model {
     /// 3. Apply final normalization
     /// 4. Project to vocabulary (LM head)
     ///
+    /// The logits are written to the internal `logits_buf` and can be accessed
+    /// via `logits_buffer()` method.
+    ///
     /// # Arguments
     /// * `token_id` - Input token ID
     /// * `seq_pos` - Position in the sequence (for RoPE)
     ///
     /// # Returns
-    /// Logits tensor [vocab_size] on GPU
-    async fn forward(&mut self, token_id: u32, seq_pos: u32) -> Result<Buffer> {
+    /// Ok(()) on success
+    async fn forward(&mut self, token_id: u32, seq_pos: u32) -> Result<()> {
         // Create a single command encoder for the entire forward pass
         let mut encoder = self
             .engine
@@ -658,34 +661,18 @@ impl Model {
         tracing::debug!("Submitting forward pass (single GPU submission)");
         self.engine.queue().submit(Some(encoder.finish()));
 
-        // TEMPORARY: Return a copy of logits_buf for compatibility with existing API
-        // TODO: Eventually modify the API to return &Buffer or ReadBuffer
-        let logits_copy = self
-            .engine
-            .device()
-            .create_buffer(&wgpu::BufferDescriptor {
-                label: Some("logits_copy"),
-                size: (self.config.vocab_size * std::mem::size_of::<f32>() as u32) as u64,
-                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            });
-        
-        let mut copy_encoder = self
-            .engine
-            .device()
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("copy_logits_encoder"),
-            });
-        copy_encoder.copy_buffer_to_buffer(
-            &self.logits_buf,
-            0,
-            &logits_copy,
-            0,
-            (self.config.vocab_size * std::mem::size_of::<f32>() as u32) as u64,
-        );
-        self.engine.queue().submit(Some(copy_encoder.finish()));
+        Ok(())
+    }
 
-        Ok(logits_copy)
+    /// Get a reference to the logits buffer
+    ///
+    /// This buffer contains the output logits from the most recent forward pass.
+    /// The buffer has size [vocab_size] and contains f32 values.
+    ///
+    /// # Returns
+    /// Reference to the logits buffer on GPU
+    pub fn logits_buffer(&self) -> &wgpu::Buffer {
+        &self.logits_buf
     }
 
     /// Generate text autoregressively
@@ -771,11 +758,11 @@ impl Model {
 
             tracing::debug!("Generation step {}/{}: seq_pos={}", step + 1, max_tokens, seq_pos);
 
-            // Step C-E: Forward pass to get logits
-            let logits = self.forward(last_token, seq_pos).await?;
+            // Step C-E: Forward pass (writes logits to internal buffer)
+            self.forward(last_token, seq_pos).await?;
 
-            // Step F: Sample next token (pass context for repetition penalty)
-            let next_token = self.sampler.sample(&self.engine, &logits, &generated_tokens).await?;
+            // Step F: Sample next token from logits buffer (pass context for repetition penalty)
+            let next_token = self.sampler.sample(&self.engine, self.logits_buffer(), &generated_tokens).await?;
             
             tracing::debug!("Sampled token ID: {}", next_token);
 
@@ -832,7 +819,7 @@ impl Model {
         println!("Tokens Generated: {}", tokens_generated);
         println!("Elapsed Time: {:.3} seconds", elapsed_secs);
         println!("Speed: {:.2} tok/s", tps);
-        println!("GPU Submissions per Token: 2 (1 forward pass + 1 logits copy)");
+        println!("GPU Submissions per Token: 1 (single forward pass)");
         println!("=================");
 
         // Decode final text from all generated tokens
