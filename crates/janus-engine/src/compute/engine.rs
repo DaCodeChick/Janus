@@ -94,30 +94,6 @@ impl ComputeEngine {
         &self.queue
     }
 
-    /// Convert BF16 bytes to F32 on CPU before GPU upload
-    ///
-    /// BF16 (Brain Floating Point) is F32 with the lower 16 bits truncated.
-    /// To convert: take the 16-bit BF16 value and pad with 16 zero bits.
-    fn bf16_to_f32(bf16_data: &[u8]) -> Vec<f32> {
-        let num_elements = bf16_data.len() / 2;
-        let mut f32_data = Vec::with_capacity(num_elements);
-
-        for i in 0..num_elements {
-            // Read BF16 as u16 (little-endian)
-            let bf16 = u16::from_le_bytes([bf16_data[i * 2], bf16_data[i * 2 + 1]]);
-            
-            // Convert to F32 by padding with 16 zero bits
-            // BF16: [sign bit][8 exp bits][7 mantissa bits]
-            // F32:  [sign bit][8 exp bits][23 mantissa bits]
-            let f32_bits = (bf16 as u32) << 16;
-            let f32_value = f32::from_bits(f32_bits);
-            
-            f32_data.push(f32_value);
-        }
-
-        f32_data
-    }
-
     /// Pack F16 values into U32 bit-packed format (2 f16s per u32)
     /// 
     /// WebGPU lacks native f16 buffer support on many devices, so we pack
