@@ -141,6 +141,7 @@ impl TransformerBlock {
     /// * `scratch_ffn_out` - Pre-allocated buffer for FFN output [hidden_dim]
     /// * `scores_buf` - Pre-allocated buffer for attention scores [num_heads * max_seq_len]
     /// * `probs_buf` - Pre-allocated buffer for attention probs [num_heads * max_seq_len]
+    /// * `rope_cache` - Pre-computed sin/cos values for RoPE [max_seq_len * head_dim]
     /// * `cache` - KV cache for storing/retrieving attention keys and values
     /// * `layer_idx` - The transformer layer index (for cache segmentation)
     /// * `seq_pos` - Position in the sequence (for RoPE)
@@ -171,6 +172,7 @@ impl TransformerBlock {
         scratch_ffn_out: &wgpu::Buffer,
         scores_buf: &wgpu::Buffer,
         probs_buf: &wgpu::Buffer,
+        rope_cache: &wgpu::Buffer,
         cache: &mut KVCache,
         layer_idx: u32,
         seq_pos: u32,
@@ -238,10 +240,10 @@ impl TransformerBlock {
             pipeline_cache,
             scratch_q,
             scratch_q_rot, // separate output buffer
+            rope_cache,
             self.config.num_heads,
             self.config.head_dim,
             seq_pos,
-            10000.0, // theta_base (standard value for LLaMA)
         )?;
 
         rope(
@@ -250,10 +252,10 @@ impl TransformerBlock {
             pipeline_cache,
             scratch_k,
             scratch_k_rot, // separate output buffer
+            rope_cache,
             self.config.num_kv_heads,
             self.config.head_dim,
             seq_pos,
-            10000.0, // theta_base (standard value for LLaMA)
         )?;
 
         // Step 4: Update KV cache with new K and V

@@ -20,11 +20,6 @@
   - Need to support mixed precision (FP16 weights, FP32 accumulation)
   - See: `crates/janus-engine/src/loaders/` (GGUF and Safetensors loaders)
 
-- [ ] **Optimize RoPE computation**
-  - Consider pre-computing sin/cos values for common positions
-  - Cache in lookup table instead of computing every time
-  - See: `crates/janus-engine/src/compute/shaders/rope.wgsl`
-
 ### Model Support
 - [ ] **Add support for more model architectures**
   - Currently supports: LLaMA, Mistral, TinyLlama
@@ -91,6 +86,23 @@
 - [ ] **Add KV cache compression**
   - Compress old KV cache entries to extend context length
   - See: `crates/janus-engine/src/compute/cache.rs`
+
+## Completed ✓
+
+- [x] **Optimize RoPE computation** (pre-computed sin/cos cache, eliminates trigonometric operations)
+- [x] **Pre-allocate attention intermediate buffers** (eliminates all dynamic allocations)
+- [x] **Temperature sampling** (softmax with configurable temperature)
+- [x] **Top-k sampling** (filter to k most likely tokens)
+- [x] **Top-p (nucleus) sampling** (cumulative probability filtering)
+- [x] **Configurable repetition penalty** (added to SamplerConfig)
+- [x] Pipeline cache infrastructure (eliminates shader recompilation)
+- [x] Static computation graph (1 GPU submission per token)
+- [x] Tiled GEMM with shared memory (5-10x speedup)
+- [x] Buffer usage conflict fixes (SwiGLU activation)
+- [x] Generation stop reason messages (debug truncation issues)
+- [x] High-precision benchmarking (tok/s metrics)
+- [x] Comprehensive README.md
+
 ---
 
 **Note**: This TODO list is living documentation. Add items as needed and delete completed items

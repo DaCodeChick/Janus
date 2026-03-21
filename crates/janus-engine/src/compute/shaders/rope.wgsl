@@ -1,4 +1,4 @@
-// Rotary Positional Embeddings (RoPE) - LLaMA half-split variant
+// Rotary Positional Embeddings (RoPE) - LLaMA half-split variant (OPTIMIZED)
 // 
 // RoPE applies rotation to pairs of dimensions in the embedding space
 // to encode positional information. This allows the model to understand
@@ -12,26 +12,21 @@
 //   angle = position / (10000 ^ (2i / head_dim))
 //   x'[i] = x[i] * cos(angle) - x[i + head_dim/2] * sin(angle)
 //   x'[i + head_dim/2] = x[i] * sin(angle) + x[i + head_dim/2] * cos(angle)
+//
+// OPTIMIZATION: This version uses pre-computed sin/cos values from a lookup table
+// instead of computing them on-the-fly, eliminating expensive trigonometric operations.
 
 struct RopeUniforms {
     seq_len: u32,        // Sequence length (total number of tokens)
     head_dim: u32,       // Dimension of each attention head
     position: u32,       // Current position in sequence
-    theta_base: f32,     // Base for frequency calculation (typically 10000.0)
+    _pad: u32,           // Padding for alignment
 }
 
 @group(0) @binding(0) var<storage, read> input: array<f32>;           // Input tensor (seq_len * head_dim)
 @group(0) @binding(1) var<storage, read_write> output: array<f32>;    // Output tensor (seq_len * head_dim)
 @group(0) @binding(2) var<uniform> uniforms: RopeUniforms;
-
-// Constants
-const PI: f32 = 3.14159265359;
-
-// Calculate the frequency for a given dimension pair
-fn get_theta(dim_idx: u32) -> f32 {
-    let exponent = f32(dim_idx) / f32(uniforms.head_dim);
-    return pow(uniforms.theta_base, exponent);
-}
+@group(0) @binding(3) var<storage, read> rope_cache: array<f32>;      // Pre-computed sin/cos values
 
 @compute @workgroup_size(256, 1, 1)
 fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
@@ -59,19 +54,11 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let x0 = input[idx_1];
     let x1 = input[idx_2];
     
-    // Calculate position
-    // CRITICAL: All heads for a single token MUST use the same position
-    // token_idx evaluates to head_idx when processing one token at a time
-    let position = uniforms.position;
-    
-    // Calculate rotation angle
-    // theta = theta_base ^ (2 * dim_pair / head_dim)
-    let theta = get_theta(dim_pair * 2u);
-    let angle = f32(position) / theta;
-    
-    // Calculate sin and cos
-    let cos_angle = cos(angle);
-    let sin_angle = sin(angle);
+    // Lookup pre-computed sin/cos values from cache
+    // Cache layout: [position * head_dim/2 + dim_pair] stores (cos, sin) interleaved
+    let cache_idx = uniforms.position * half_dim + dim_pair;
+    let cos_angle = rope_cache[cache_idx * 2u];
+    let sin_angle = rope_cache[cache_idx * 2u + 1u];
     
     // Apply rotation (half-split variant)
     let y0 = x0 * cos_angle - x1 * sin_angle;

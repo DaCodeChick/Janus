@@ -17,7 +17,7 @@ struct RopeUniforms {
     seq_len: u32,
     head_dim: u32,
     position: u32,
-    theta_base: f32,
+    _pad: u32, // Padding for alignment (removed theta_base)
 }
 
 /// Apply Rotary Positional Embeddings (RoPE)
@@ -25,16 +25,19 @@ struct RopeUniforms {
 /// RoPE encodes positional information by rotating pairs of dimensions in the embedding space.
 /// This allows the model to understand token ordering without explicit position embeddings.
 ///
+/// This optimized version uses pre-computed sin/cos values from a cache buffer,
+/// eliminating expensive trigonometric computations during inference.
+///
 /// # Arguments
 /// * `engine` - The compute engine containing GPU device and queue
 /// * `encoder` - Shared command encoder for recording GPU operations
 /// * `pipeline_cache` - Pre-compiled shader cache
 /// * `input` - GPU buffer containing input tensor (seq_len * head_dim elements)
 /// * `output` - Pre-allocated output buffer (same size as input)
+/// * `rope_cache` - Pre-computed sin/cos values [max_seq_len * head_dim]
 /// * `seq_len` - Sequence length (number of tokens)
 /// * `head_dim` - Dimension of each attention head (must be even)
 /// * `position` - Starting position in the sequence
-/// * `theta_base` - Base for frequency calculation (typically 10000.0)
 ///
 /// # Note
 /// This function records commands to the encoder but does NOT submit them.
@@ -45,10 +48,10 @@ pub fn rope(
     pipeline_cache: &PipelineCache,
     input: &wgpu::Buffer,
     output: &wgpu::Buffer,
+    rope_cache: &wgpu::Buffer,
     seq_len: u32,
     head_dim: u32,
     position: u32,
-    theta_base: f32,
 ) -> Result<()> {
     let device = engine.device();
 
@@ -59,7 +62,7 @@ pub fn rope(
         seq_len,
         head_dim,
         position,
-        theta_base,
+        _pad: 0,
     };
     let uniforms_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("rope_uniforms"),
@@ -100,6 +103,16 @@ pub fn rope(
                 },
                 count: None,
             },
+            wgpu::BindGroupLayoutEntry {
+                binding: 3,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
         ],
     });
 
@@ -118,6 +131,10 @@ pub fn rope(
             wgpu::BindGroupEntry {
                 binding: 2,
                 resource: uniforms_buffer.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 3,
+                resource: rope_cache.as_entire_binding(),
             },
         ],
     });

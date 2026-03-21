@@ -340,10 +340,10 @@ impl Sampler {
     /// # Returns
     /// Sampled token ID
     fn sample_from_distribution(&self, probs: &[f32]) -> u32 {
-        use rand::Rng;
+        use rand::RngExt;
         
-        let mut rng = rand::thread_rng();
-        let random_value: f32 = rng.r#gen();
+        let mut rng = rand::rng();
+        let random_value: f32 = rng.random();
         
         let mut cumsum = 0.0;
         for (i, &prob) in probs.iter().enumerate() {
