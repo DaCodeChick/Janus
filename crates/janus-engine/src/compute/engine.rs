@@ -2,6 +2,7 @@
 
 use super::error::{ComputeError, Result};
 use crate::formats::{ModelLoader, TensorDType};
+use half::f16;
 use std::collections::HashMap;
 use wgpu::util::DeviceExt;
 
@@ -117,14 +118,82 @@ impl ComputeEngine {
         f32_data
     }
 
+    /// Pack F16 values into U32 bit-packed format (2 f16s per u32)
+    /// 
+    /// WebGPU lacks native f16 buffer support on many devices, so we pack
+    /// two 16-bit floats into a single u32 and unpack on-the-fly in shaders.
+    /// 
+    /// Packing format: high 16 bits = second f16, low 16 bits = first f16
+    /// This halves VRAM usage and doubles memory bandwidth.
+    fn pack_f16_to_u32(f16_data: &[f16]) -> Vec<u32> {
+        let num_pairs = (f16_data.len() + 1) / 2; // Round up for odd lengths
+        let mut packed = Vec::with_capacity(num_pairs);
+
+        for i in (0..f16_data.len()).step_by(2) {
+            let low_f16 = f16_data[i];
+            let high_f16 = if i + 1 < f16_data.len() {
+                f16_data[i + 1]
+            } else {
+                f16::ZERO // Pad with zero if odd number of elements
+            };
+
+            // Pack: high 16 bits = second f16, low 16 bits = first f16
+            let packed_u32 = ((high_f16.to_bits() as u32) << 16) | (low_f16.to_bits() as u32);
+            packed.push(packed_u32);
+        }
+
+        packed
+    }
+
+    /// Convert F32 data to packed F16 format
+    fn f32_to_packed_f16(f32_data: &[f32]) -> Vec<u32> {
+        let f16_data: Vec<f16> = f32_data.iter().map(|&x| f16::from_f32(x)).collect();
+        Self::pack_f16_to_u32(&f16_data)
+    }
+
+    /// Convert BF16 data to packed F16 format
+    fn bf16_to_packed_f16(bf16_data: &[u8]) -> Vec<u32> {
+        let num_elements = bf16_data.len() / 2;
+        let mut f16_data = Vec::with_capacity(num_elements);
+
+        for i in 0..num_elements {
+            // Read BF16 as u16 (little-endian)
+            let bf16 = u16::from_le_bytes([bf16_data[i * 2], bf16_data[i * 2 + 1]]);
+            
+            // Convert BF16 -> F32 -> F16
+            let f32_bits = (bf16 as u32) << 16;
+            let f32_value = f32::from_bits(f32_bits);
+            let f16_value = f16::from_f32(f32_value);
+            
+            f16_data.push(f16_value);
+        }
+
+        Self::pack_f16_to_u32(&f16_data)
+    }
+
+    /// Convert native F16 data to packed F16 format
+    fn f16_to_packed_f16(f16_data: &[u8]) -> Vec<u32> {
+        let num_elements = f16_data.len() / 2;
+        let mut f16_vec = Vec::with_capacity(num_elements);
+
+        for i in 0..num_elements {
+            // Read F16 as u16 (little-endian)
+            let f16_bits = u16::from_le_bytes([f16_data[i * 2], f16_data[i * 2 + 1]]);
+            f16_vec.push(f16::from_bits(f16_bits));
+        }
+
+        Self::pack_f16_to_u32(&f16_vec)
+    }
+
     /// Allocate tensors from a model file to GPU buffers
     ///
     /// Accepts any ModelLoader implementation (GGUF, Safetensors, etc.)
     /// and creates GPU buffers for all tensors with zero-copy from mmap.
     ///
     /// # Supported Data Types
-    /// - **F32**: Direct zero-copy transfer to GPU
-    /// - **BF16**: Converted to F32 on CPU, then uploaded to GPU
+    /// - **F32**: Converted to packed FP16 (2 f16s per u32) for 50% VRAM reduction
+    /// - **F16**: Converted to packed FP16 (2 f16s per u32) for efficient storage
+    /// - **BF16**: Converted to packed FP16 (2 f16s per u32) via F32 intermediate
     /// - **Q4_K**: 4-bit quantized format, dequantized on-the-fly in shader
     /// - **Q5_K**: 5-bit quantized format, dequantized on-the-fly in shader
     /// - **Q8_0**: 8-bit quantized format, dequantized on-the-fly in shader
@@ -139,8 +208,9 @@ impl ComputeEngine {
 
         let mut total_bytes = 0u64;
         let mut skipped_count = 0;
-        let mut f32_count = 0;
-        let mut bf16_count = 0;
+        let mut f32_packed_count = 0;
+        let mut f16_packed_count = 0;
+        let mut bf16_packed_count = 0;
         let mut q4k_count = 0;
         let mut q5k_count = 0;
         let mut q8_0_count = 0;
@@ -148,46 +218,74 @@ impl ComputeEngine {
         for (name, tensor) in tensors {
             match tensor.dtype {
                 TensorDType::F32 => {
-                    // Direct zero-copy transfer for F32 tensors
-                    let size_bytes = tensor.data.len();
+                    // Convert F32 to packed FP16 format (50% VRAM reduction)
+                    let f32_data: &[f32] = bytemuck::cast_slice(tensor.data);
+                    let packed_data = Self::f32_to_packed_f16(f32_data);
+                    let packed_bytes = bytemuck::cast_slice(&packed_data);
 
                     let buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                        label: Some(&format!("tensor_{}", name)),
-                        contents: tensor.data,
+                        label: Some(&format!("tensor_{}_f32_packed_f16", name)),
+                        contents: packed_bytes,
                         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
                     });
 
-                    total_bytes += size_bytes as u64;
-                    f32_count += 1;
+                    total_bytes += packed_bytes.len() as u64;
+                    f32_packed_count += 1;
 
                     tracing::debug!(
-                        "Allocated tensor '{}': {} bytes (F32)",
+                        "Allocated tensor '{}': {} bytes (F32 -> packed FP16, {} elements, {:.1}% VRAM reduction)",
                         name,
-                        size_bytes
+                        packed_bytes.len(),
+                        f32_data.len(),
+                        50.0
+                    );
+
+                    tensor_buffers.insert(name, buffer);
+                }
+
+                TensorDType::F16 => {
+                    // Convert F16 to packed FP16 format (efficient storage)
+                    let packed_data = Self::f16_to_packed_f16(tensor.data);
+                    let packed_bytes = bytemuck::cast_slice(&packed_data);
+
+                    let buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                        label: Some(&format!("tensor_{}_f16_packed", name)),
+                        contents: packed_bytes,
+                        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                    });
+
+                    total_bytes += packed_bytes.len() as u64;
+                    f16_packed_count += 1;
+
+                    tracing::debug!(
+                        "Allocated tensor '{}': {} bytes (F16 -> packed FP16, {} elements)",
+                        name,
+                        packed_bytes.len(),
+                        tensor.data.len() / 2
                     );
 
                     tensor_buffers.insert(name, buffer);
                 }
 
                 TensorDType::BF16 => {
-                    // Convert BF16 to F32 on CPU, then upload
-                    let f32_data = Self::bf16_to_f32(tensor.data);
-                    let f32_bytes = bytemuck::cast_slice(&f32_data);
+                    // Convert BF16 to packed FP16 format (via F32 intermediate)
+                    let packed_data = Self::bf16_to_packed_f16(tensor.data);
+                    let packed_bytes = bytemuck::cast_slice(&packed_data);
                     
                     let buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                        label: Some(&format!("tensor_{}_bf16_to_f32", name)),
-                        contents: f32_bytes,
+                        label: Some(&format!("tensor_{}_bf16_packed_f16", name)),
+                        contents: packed_bytes,
                         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
                     });
 
-                    total_bytes += f32_bytes.len() as u64;
-                    bf16_count += 1;
+                    total_bytes += packed_bytes.len() as u64;
+                    bf16_packed_count += 1;
 
                     tracing::debug!(
-                        "Allocated tensor '{}': {} bytes (BF16 -> F32, {} elements)",
+                        "Allocated tensor '{}': {} bytes (BF16 -> packed FP16, {} elements)",
                         name,
-                        f32_bytes.len(),
-                        f32_data.len()
+                        packed_bytes.len(),
+                        tensor.data.len() / 2
                     );
 
                     tensor_buffers.insert(name, buffer);
@@ -273,11 +371,12 @@ impl ComputeEngine {
 
         let total_mb = total_bytes as f64 / (1024.0 * 1024.0);
         tracing::info!(
-            "Successfully allocated {} tensors ({:.2} MB) to GPU VRAM: {} F32, {} BF16->F32, {} Q4_K, {} Q5_K, {} Q8_0, {} skipped",
+            "Successfully allocated {} tensors ({:.2} MB) to GPU VRAM: {} F32->FP16, {} F16->FP16, {} BF16->FP16, {} Q4_K, {} Q5_K, {} Q8_0, {} skipped",
             tensor_buffers.len(),
             total_mb,
-            f32_count,
-            bf16_count,
+            f32_packed_count,
+            f16_packed_count,
+            bf16_packed_count,
             q4k_count,
             q5k_count,
             q8_0_count,

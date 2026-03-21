@@ -14,11 +14,15 @@
 ## Medium Priority
 
 ### Performance Optimizations
-- [ ] **Implement FP16 inference support**
-  - Most models are distributed in FP16 format
-  - Current implementation loads everything as FP32
-  - Need to support mixed precision (FP16 weights, FP32 accumulation)
-  - See: `crates/janus-engine/src/loaders/` (GGUF and Safetensors loaders)
+- [x] **Implement FP16 mixed-precision inference support**
+  - ✓ Implemented packed FP16 format (2 f16s per u32) for 50% VRAM reduction
+  - ✓ F32, F16, and BF16 tensors are converted to packed FP16 on CPU
+  - ✓ Shaders unpack FP16 on-the-fly using `unpack2x16float()` WebGPU builtin
+  - ✓ All computation happens in FP32 precision (mixed-precision)
+  - ✓ Updated GEMM, matmul, and embed shaders
+  - ✓ Comprehensive integration tests
+  - See: `crates/janus-engine/src/compute/engine.rs` (packing functions)
+  - See: `crates/janus-engine/src/compute/shaders/` (unpacking in shaders)
 
 ### Model Support
 - [x] **Add support for more model architectures**
