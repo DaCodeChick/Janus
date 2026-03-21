@@ -360,13 +360,14 @@ impl TransformerBlock {
         )?;
 
         // Step 12: Element-wise multiply gate (after SiLU) and up (SwiGLU)
+        // Write result to scratch_gate (reusing it as temp, done reading from it)
         elementwise_mul(
             engine,
             encoder,
             pipeline_cache,
             scratch_swiglu, // SiLU output
             scratch_up,
-            scratch_swiglu, // Reuse same buffer for output
+            scratch_gate, // Use gate buffer for output (safe reuse)
             self.config.ffn_dim,
         )?;
 
@@ -375,7 +376,7 @@ impl TransformerBlock {
             engine,
             encoder,
             pipeline_cache,
-            scratch_swiglu,
+            scratch_gate, // SwiGLU result
             &self.ffn_down_weight,
             scratch_ffn_out,
             1,
