@@ -9,7 +9,7 @@
 
 use crate::compute::cache::KVCache;
 use crate::compute::ops::{
-    add_tensors, compute_attention_static, elementwise_mul, gemm, rmsnorm, rope, silu,
+    add_tensors, compute_attention, elementwise_mul, gemm, rmsnorm, rope, silu,
 };
 use crate::compute::pipeline_cache::PipelineCache;
 use crate::compute::{ComputeEngine, Result};
@@ -267,9 +267,10 @@ impl TransformerBlock {
         let (key_cache, value_cache) = cache.buffers();
         let current_seq_len = seq_pos + 1; // Sequence length including current token
 
-        compute_attention_static(
+        compute_attention(
             engine,
             encoder,
+            pipeline_cache,
             scratch_q_rot, // Use rotated Q
             key_cache,
             value_cache,

@@ -24,7 +24,7 @@ mod tests_q4k;
 
 // Re-export all public functions
 pub use activation::{rmsnorm, silu};
-pub use attention::{compute_attention, compute_attention_static};
+pub use attention::compute_attention;
 pub use elementwise::{add_tensors, elementwise_mul};
 pub use matmul::{gemm, matmul};
 pub use quantized::{gemm_q4_k, Q4K_BLOCK_BYTES, Q4K_BLOCK_SIZE};
