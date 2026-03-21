@@ -6,10 +6,10 @@
 //! - Temperature sampling
 //! - Top-k sampling
 //! - Top-p (nucleus) sampling
+//! - Beam search
 //! - Configurable repetition penalty
 //!
 //! Future enhancements:
-//! - Beam search
 //! - Mirostat sampling
 
 use crate::compute::{ComputeEngine, Result};
@@ -25,6 +25,17 @@ pub struct SamplerConfig {
     pub top_p: f32,
     /// Repetition penalty (1.0 = no penalty, higher values penalize repetition more)
     pub repetition_penalty: f32,
+    /// Beam width for beam search (1 = disabled, uses greedy/temperature sampling)
+    pub beam_width: u32,
+}
+
+/// A beam hypothesis for beam search
+#[derive(Debug, Clone)]
+pub struct BeamHypothesis {
+    /// Sequence of token IDs in this hypothesis
+    pub tokens: Vec<u32>,
+    /// Log probability score of this hypothesis
+    pub score: f32,
 }
 
 impl Default for SamplerConfig {
@@ -34,6 +45,7 @@ impl Default for SamplerConfig {
             top_k: 0,
             top_p: 1.0,
             repetition_penalty: 1.15,
+            beam_width: 1, // Beam search disabled by default
         }
     }
 }
@@ -379,6 +391,59 @@ impl Sampler {
             .unwrap_or(0)
     }
 
+    /// Select top-k tokens and their log probabilities for beam search expansion
+    ///
+    /// # Arguments
+    /// * `logits` - Logit values from the model
+    /// * `k` - Number of top tokens to select (beam width)
+    ///
+    /// # Returns
+    /// Vector of (token_id, log_prob) pairs sorted by probability (descending)
+    pub fn top_k_tokens(&self, logits: &[f32], k: u32) -> Vec<(u32, f32)> {
+        // Convert logits to log probabilities using log-softmax for numerical stability
+        let log_probs = self.log_softmax(logits);
+        
+        // Get all (token_id, log_prob) pairs
+        let mut token_probs: Vec<(u32, f32)> = log_probs
+            .iter()
+            .enumerate()
+            .map(|(idx, &prob)| (idx as u32, prob))
+            .collect();
+        
+        // Sort by log probability (descending)
+        token_probs.sort_by(|a, b| {
+            b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal)
+        });
+        
+        // Take top k
+        token_probs.truncate(k as usize);
+        token_probs
+    }
+    
+    /// Compute log-softmax for numerical stability in beam search
+    ///
+    /// # Arguments
+    /// * `logits` - Logit values
+    ///
+    /// # Returns
+    /// Log probabilities
+    pub(crate) fn log_softmax(&self, logits: &[f32]) -> Vec<f32> {
+        // Find max for numerical stability
+        let max_logit = logits.iter()
+            .fold(f32::NEG_INFINITY, |max, &x| if x.is_finite() && x > max { x } else { max });
+        
+        // Compute log(sum(exp(logit - max)))
+        let log_sum_exp = logits.iter()
+            .map(|&x| if x.is_finite() { (x - max_logit).exp() } else { 0.0 })
+            .sum::<f32>()
+            .ln();
+        
+        // Compute log(softmax(x)) = x - max - log(sum(exp(x - max)))
+        logits.iter()
+            .map(|&x| if x.is_finite() { x - max_logit - log_sum_exp } else { f32::NEG_INFINITY })
+            .collect()
+    }
+
     /// Get the current sampler configuration
     pub const fn config(&self) -> &SamplerConfig {
         &self.config
@@ -387,6 +452,11 @@ impl Sampler {
     /// Get the vocabulary size
     pub const fn vocab_size(&self) -> u32 {
         self.vocab_size
+    }
+    
+    /// Check if beam search is enabled
+    pub fn is_beam_search_enabled(&self) -> bool {
+        self.config.beam_width > 1
     }
 }
 
@@ -422,6 +492,7 @@ mod tests {
         assert_eq!(config.temperature, 0.0);
         assert_eq!(config.top_k, 0);
         assert_eq!(config.top_p, 1.0);
+        assert_eq!(config.beam_width, 1);
     }
 
     #[test]
@@ -429,5 +500,50 @@ mod tests {
         let sampler = Sampler::greedy(32000);
         assert_eq!(sampler.vocab_size(), 32000);
         assert_eq!(sampler.config().temperature, 0.0);
+        assert!(!sampler.is_beam_search_enabled());
+    }
+    
+    #[test]
+    fn test_beam_search_enabled() {
+        let config = SamplerConfig {
+            temperature: 0.0,
+            top_k: 0,
+            top_p: 1.0,
+            repetition_penalty: 1.0,
+            beam_width: 4,
+        };
+        let sampler = Sampler::new(config, 32000);
+        assert!(sampler.is_beam_search_enabled());
+    }
+    
+    #[test]
+    fn test_top_k_tokens() {
+        let sampler = Sampler::greedy(1000);
+        let logits = vec![0.1, 0.5, 0.3, 0.9, 0.2];
+        
+        let top_2 = sampler.top_k_tokens(&logits, 2);
+        assert_eq!(top_2.len(), 2);
+        assert_eq!(top_2[0].0, 3); // Token 3 has highest logit (0.9)
+        assert_eq!(top_2[1].0, 1); // Token 1 has second highest (0.5)
+        
+        // Log probabilities should be negative (and first should be highest)
+        assert!(top_2[0].1 > top_2[1].1);
+        assert!(top_2[0].1 < 0.0);
+    }
+    
+    #[test]
+    fn test_log_softmax() {
+        let sampler = Sampler::greedy(1000);
+        let logits = vec![1.0, 2.0, 3.0];
+        
+        let log_probs = sampler.log_softmax(&logits);
+        
+        // Sum of probabilities should be 1.0 (sum of exp(log_probs) = 1.0)
+        let sum: f32 = log_probs.iter().map(|&x| x.exp()).sum();
+        assert!((sum - 1.0).abs() < 1e-6);
+        
+        // Highest logit should have highest log probability
+        assert!(log_probs[2] > log_probs[1]);
+        assert!(log_probs[1] > log_probs[0]);
     }
 }

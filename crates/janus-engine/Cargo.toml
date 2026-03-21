@@ -50,3 +50,8 @@ tokenizers = "0.20"
 [dev-dependencies]
 tokio = { workspace = true, features = ["full", "test-util"] }
 tempfile = "3.27"
+criterion = "0.5"
+
+[[bench]]
+name = "sampling_bench"
+harness = false
