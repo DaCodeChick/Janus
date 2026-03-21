@@ -765,6 +765,7 @@ impl Model {
             // Check sequence length limit
             if seq_pos >= self.config.max_seq_len {
                 tracing::warn!("Reached maximum sequence length: {}", self.config.max_seq_len);
+                eprintln!("\n[Generation stopped: Reached max sequence length: {}]", self.config.max_seq_len);
                 break;
             }
 
@@ -784,6 +785,7 @@ impl Model {
             // Check for EOS token (token ID 2 for LLaMA architectures)
             if next_token == 2 {
                 tracing::info!("Generated EOS token (ID: 2), stopping generation");
+                eprintln!("\n[Generation stopped: EOS token (ID: 2) generated]");
                 break;
             }
             
@@ -791,6 +793,7 @@ impl Model {
             if let Some(eos_id) = self.tokenizer.eos_token_id() {
                 if next_token == eos_id {
                     tracing::info!("Generated EOS token (ID: {}), stopping generation", eos_id);
+                    eprintln!("\n[Generation stopped: EOS token (ID: {}) generated]", eos_id);
                     break;
                 }
             }
@@ -816,6 +819,11 @@ impl Model {
             seq_pos += 1;
         }
 
+        // Indicate why generation stopped
+        if tokens_generated as usize >= max_tokens {
+            eprintln!("[Generation stopped: Reached max_tokens limit: {}]", max_tokens);
+        }
+
         // Final newline
         println!();
 
@@ -828,7 +836,7 @@ impl Model {
         };
 
         println!("\n=== Telemetry ===");
-        println!("Tokens Generated: {}", tokens_generated);
+        println!("Tokens Generated: {} / {} requested", tokens_generated, max_tokens);
         println!("Elapsed Time: {:.3} seconds", elapsed_secs);
         println!("Speed: {:.2} tok/s", tps);
         println!("GPU Submissions per Token: 1 (single forward pass)");
