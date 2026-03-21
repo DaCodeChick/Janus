@@ -60,7 +60,7 @@
 //! ```
 
 use crate::compute::cache::KVCache;
-use crate::compute::ops::{gemm_static, rmsnorm_static};
+use crate::compute::ops::{gemm_static, rmsnorm};
 use crate::compute::{ComputeEngine, PipelineCache, Result};
 use crate::model::{block::TransformerBlock, sampler::Sampler, tokenizer::Tokenizer};
 use wgpu::Buffer;
@@ -644,9 +644,10 @@ impl Model {
 
         // Step 3: Final RMSNorm (reuse scratch_ffn_norm as temporary buffer)
         tracing::debug!("Applying final RMSNorm");
-        rmsnorm_static(
+        rmsnorm(
             &self.engine,
             &mut encoder,
+            &self.pipeline_cache,
             final_block_output,
             &self.scratch_ffn_norm,
             &self.output_norm_weight,

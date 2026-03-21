@@ -23,7 +23,7 @@ mod tests;
 mod tests_q4k;
 
 // Re-export all public functions
-pub use activation::{rmsnorm, rmsnorm_static, silu, silu_static};
+pub use activation::{rmsnorm, silu};
 pub use attention::{compute_attention, compute_attention_static};
 pub use elementwise::{add_tensors, elementwise_mul};
 pub use matmul::{gemm, gemm_static, matmul};

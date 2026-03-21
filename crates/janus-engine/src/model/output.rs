@@ -2,9 +2,6 @@
 //!
 //! This module implements the final projection from hidden states to vocabulary logits.
 
-use crate::compute::ops::{gemm, rmsnorm};
-use crate::compute::{ComputeEngine, Result};
-
 /// Language model head configuration
 #[derive(Debug, Clone)]
 pub struct LMHeadConfig {
@@ -49,55 +46,6 @@ impl LMHead {
             output_norm_weight,
             output_weight,
         }
-    }
-
-    /// Compute logits from final hidden state
-    ///
-    /// This performs the complete forward pass of the LM head:
-    /// 1. RMSNorm(hidden_state) → normalized hidden state
-    /// 2. GEMM(normalized, output_weight) → logits [vocab_size]
-    ///
-    /// # Arguments
-    /// * `engine` - The compute engine for GPU operations
-    /// * `hidden_state` - Final hidden state from the last transformer block [hidden_dim]
-    ///
-    /// # Returns
-    /// GPU buffer containing logits [vocab_size] - unnormalized scores for each vocabulary token
-    ///
-    /// # Note
-    /// The logits are NOT softmax-normalized. The sampler will handle token selection
-    /// directly from these raw logits (using argmax for greedy, or applying temperature
-    /// and softmax for sampling).
-    pub async fn forward(
-        &self,
-        engine: &ComputeEngine,
-        hidden_state: &wgpu::Buffer,
-    ) -> Result<wgpu::Buffer> {
-        // Step 1: Apply output normalization (RMSNorm)
-        let normalized = rmsnorm(
-            engine,
-            hidden_state,
-            &self.output_norm_weight,
-            self.config.hidden_dim,
-            self.config.rms_norm_eps,
-        )
-        .await?;
-
-        // Step 2: Project to vocabulary size
-        // output_weight is [hidden_dim × vocab_size], so we do:
-        // logits = normalized^T * output_weight
-        // This is a matrix-vector multiplication producing [vocab_size] output
-        let logits = gemm(
-            engine,
-            &normalized,
-            &self.output_weight,
-            1,
-            self.config.hidden_dim,
-            self.config.vocab_size,
-        )
-        .await?;
-
-        Ok(logits)
     }
 
     /// Get the configuration

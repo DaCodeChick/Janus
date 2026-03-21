@@ -9,8 +9,7 @@
 
 use crate::compute::cache::KVCache;
 use crate::compute::ops::{
-    add_tensors, compute_attention_static, elementwise_mul, gemm_static, rmsnorm_static, rope,
-    silu_static,
+    add_tensors, compute_attention_static, elementwise_mul, gemm_static, rmsnorm, rope, silu,
 };
 use crate::compute::pipeline_cache::PipelineCache;
 use crate::compute::{ComputeEngine, Result};
@@ -177,12 +176,13 @@ impl TransformerBlock {
         // ===================================================================
 
         // Step 1: Input normalization
-        rmsnorm_static(
+        rmsnorm(
             engine,
             encoder,
+            pipeline_cache,
             input,
-            &self.attn_norm_weight,
             scratch_input_norm,
+            &self.attn_norm_weight,
             self.config.hidden_dim,
             self.config.rms_norm_eps,
         )?;
@@ -307,12 +307,13 @@ impl TransformerBlock {
         // ===================================================================
 
         // Step 8: FFN input normalization
-        rmsnorm_static(
+        rmsnorm(
             engine,
             encoder,
+            pipeline_cache,
             scratch_hidden1,
-            &self.ffn_norm_weight,
             scratch_ffn_norm,
+            &self.ffn_norm_weight,
             self.config.hidden_dim,
             self.config.rms_norm_eps,
         )?;
@@ -329,9 +330,10 @@ impl TransformerBlock {
             self.config.ffn_dim,
         )?;
 
-        silu_static(
+        silu(
             engine,
             encoder,
+            pipeline_cache,
             scratch_gate,
             scratch_gate, // in-place
             self.config.ffn_dim,
