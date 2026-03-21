@@ -125,7 +125,9 @@ impl ComputeEngine {
     /// # Supported Data Types
     /// - **F32**: Direct zero-copy transfer to GPU
     /// - **BF16**: Converted to F32 on CPU, then uploaded to GPU
-    /// - **Q4_K**: Quantized format, dequantized on-the-fly in shader
+    /// - **Q4_K**: 4-bit quantized format, dequantized on-the-fly in shader
+    /// - **Q5_K**: 5-bit quantized format, dequantized on-the-fly in shader
+    /// - **Q8_0**: 8-bit quantized format, dequantized on-the-fly in shader
     /// - **Other types**: Skipped with warning
     pub fn allocate_tensors<L: ModelLoader>(&self, loader: &L) -> Result<HashMap<String, wgpu::Buffer>> {
         let tensors = loader.tensors()
@@ -140,6 +142,8 @@ impl ComputeEngine {
         let mut f32_count = 0;
         let mut bf16_count = 0;
         let mut q4k_count = 0;
+        let mut q5k_count = 0;
+        let mut q8_0_count = 0;
 
         for (name, tensor) in tensors {
             match tensor.dtype {
@@ -211,6 +215,50 @@ impl ComputeEngine {
                     tensor_buffers.insert(name, buffer);
                 }
 
+                TensorDType::Q5_K => {
+                    // Q5_K: Keep quantized format, dequantize on-the-fly in shader
+                    let size_bytes = tensor.data.len();
+
+                    let buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                        label: Some(&format!("tensor_{}_q5k", name)),
+                        contents: tensor.data,
+                        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                    });
+
+                    total_bytes += size_bytes as u64;
+                    q5k_count += 1;
+
+                    tracing::debug!(
+                        "Allocated tensor '{}': {} bytes (Q5_K quantized, on-the-fly dequantization)",
+                        name,
+                        size_bytes
+                    );
+
+                    tensor_buffers.insert(name, buffer);
+                }
+
+                TensorDType::Q8_0 => {
+                    // Q8_0: Keep quantized format, dequantize on-the-fly in shader
+                    let size_bytes = tensor.data.len();
+
+                    let buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                        label: Some(&format!("tensor_{}_q8_0", name)),
+                        contents: tensor.data,
+                        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                    });
+
+                    total_bytes += size_bytes as u64;
+                    q8_0_count += 1;
+
+                    tracing::debug!(
+                        "Allocated tensor '{}': {} bytes (Q8_0 quantized, on-the-fly dequantization)",
+                        name,
+                        size_bytes
+                    );
+
+                    tensor_buffers.insert(name, buffer);
+                }
+
                 _ => {
                     // Skip unsupported types (other quantized formats will be added later)
                     tracing::warn!(
@@ -225,12 +273,14 @@ impl ComputeEngine {
 
         let total_mb = total_bytes as f64 / (1024.0 * 1024.0);
         tracing::info!(
-            "Successfully allocated {} tensors ({:.2} MB) to GPU VRAM: {} F32, {} BF16->F32, {} Q4_K, {} skipped",
+            "Successfully allocated {} tensors ({:.2} MB) to GPU VRAM: {} F32, {} BF16->F32, {} Q4_K, {} Q5_K, {} Q8_0, {} skipped",
             tensor_buffers.len(),
             total_mb,
             f32_count,
             bf16_count,
             q4k_count,
+            q5k_count,
+            q8_0_count,
             skipped_count
         );
 
