@@ -1,16 +1,5 @@
 # TODO - Janus Engine
 
-## High Priority
-
-### Generation Configuration
-- [ ] **Make `max_tokens` a configuration setting**
-  - Currently hardcoded to 128 in `examples/inference.rs` (line 285)
-  - Should be part of `SamplerConfig` or a new `GenerationConfig` struct
-  - Allow users to specify via CLI argument or config file
-  - Typical values: 128 (short), 512 (medium), 2048 (long)
-  - See: `crates/janus-engine/src/model/model.rs::generate()` function
-  - See: `crates/janus-engine/src/model/sampler.rs::SamplerConfig`
-
 ## Low Priority
 
 ### Developer Experience
@@ -27,15 +16,12 @@
   - See: `README.md` and crate-level docs
 
 ### Features
-- [ ] **Add batched inference support**
-  - Process multiple prompts in parallel
-  - Requires batched GEMM operations
-  - See: `crates/janus-engine/src/model/model.rs`
-
-- [ ] **Implement speculative decoding**
+- [x] **Implement speculative decoding** ✅
   - Use small draft model + large target model for speedup
-  - Advanced optimization technique
-  - See: `crates/janus-engine/src/model/`
+  - Advanced optimization technique with GPU-based KV cache copying
+  - Proper sampling using target model's sampler configuration
+  - Comprehensive unit tests for statistics and configuration
+  - See: `crates/janus-engine/src/model/speculative.rs`
 
 - [ ] **Add KV cache compression**
   - Compress old KV cache entries to extend context length

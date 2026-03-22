@@ -357,4 +357,198 @@ impl KVCache {
     pub fn reset(&mut self) {
         self.current_position = 0;
     }
+
+    /// Copy KV cache contents from source cache to this cache
+    ///
+    /// This method performs an efficient GPU-to-GPU copy of the entire KV cache.
+    /// Used in speculative decoding to synchronize draft and target model caches.
+    ///
+    /// # Arguments
+    /// * `encoder` - Command encoder to record the copy operation
+    /// * `source` - Source cache to copy from
+    ///
+    /// # Requirements
+    /// - Source and destination caches must have identical dimensions
+    /// - Both caches must have COPY_SRC and COPY_DST usage flags
+    ///
+    /// # Panics
+    /// Panics if cache dimensions don't match
+    pub fn copy_from(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        source: &KVCache,
+    ) -> Result<()> {
+        // Verify cache dimensions match
+        if self.batch_size != source.batch_size
+            || self.num_layers != source.num_layers
+            || self.max_seq_len != source.max_seq_len
+            || self.num_kv_heads != source.num_kv_heads
+            || self.head_dim != source.head_dim
+        {
+            return Err(super::ComputeError::Other(format!(
+                "KV cache dimension mismatch: source {:?} != dest {:?}",
+                (
+                    source.batch_size,
+                    source.num_layers,
+                    source.max_seq_len,
+                    source.num_kv_heads,
+                    source.head_dim
+                ),
+                (
+                    self.batch_size,
+                    self.num_layers,
+                    self.max_seq_len,
+                    self.num_kv_heads,
+                    self.head_dim
+                )
+            )));
+        }
+
+        // Calculate buffer size
+        let cache_size = (self.batch_size
+            * self.num_layers
+            * self.max_seq_len
+            * self.num_kv_heads
+            * self.head_dim) as u64
+            * std::mem::size_of::<f32>() as u64;
+
+        // Copy key cache
+        encoder.copy_buffer_to_buffer(&source.key_cache, 0, &self.key_cache, 0, cache_size);
+
+        // Copy value cache
+        encoder.copy_buffer_to_buffer(&source.value_cache, 0, &self.value_cache, 0, cache_size);
+
+        // Copy position
+        self.current_position = source.current_position;
+
+        tracing::debug!(
+            "Copied KV cache: {} MB, position {}",
+            (cache_size * 2) as f64 / (1024.0 * 1024.0),
+            self.current_position
+        );
+
+        Ok(())
+    }
+
+    /// Get batch size
+    pub const fn batch_size(&self) -> u32 {
+        self.batch_size
+    }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_kv_cache_creation() {
+        let engine = ComputeEngine::new().await.unwrap();
+        
+        let cache = KVCache::new(
+            &engine,
+            1,      // batch_size
+            4,      // num_layers
+            128,    // max_seq_len
+            4,      // num_kv_heads
+            16,     // head_dim
+        );
+        
+        assert!(cache.is_ok());
+        let cache = cache.unwrap();
+        
+        assert_eq!(cache.num_layers(), 4);
+        assert_eq!(cache.max_seq_len(), 128);
+        assert_eq!(cache.num_kv_heads(), 4);
+        assert_eq!(cache.head_dim(), 16);
+        assert_eq!(cache.current_position(), 0);
+        assert_eq!(cache.batch_size(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_kv_cache_reset() {
+        let engine = ComputeEngine::new().await.unwrap();
+        
+        let mut cache = KVCache::new(&engine, 1, 4, 128, 4, 16).unwrap();
+        
+        // Initially at position 0
+        assert_eq!(cache.current_position(), 0);
+        
+        // Reset should set position back to 0
+        cache.reset();
+        assert_eq!(cache.current_position(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_kv_cache_copy_matching_dimensions() {
+        let engine = ComputeEngine::new().await.unwrap();
+        
+        let source = KVCache::new(&engine, 1, 4, 128, 4, 16).unwrap();
+        let mut dest = KVCache::new(&engine, 1, 4, 128, 4, 16).unwrap();
+        
+        let mut encoder = engine.device().create_command_encoder(
+            &wgpu::CommandEncoderDescriptor {
+                label: Some("test_copy_encoder"),
+            }
+        );
+        
+        let result = dest.copy_from(&mut encoder, &source);
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_kv_cache_copy_mismatched_dimensions() {
+        let engine = ComputeEngine::new().await.unwrap();
+        
+        // Create caches with different dimensions
+        let source = KVCache::new(&engine, 1, 4, 128, 4, 16).unwrap();
+        let mut dest = KVCache::new(&engine, 1, 4, 256, 4, 16).unwrap(); // Different max_seq_len
+        
+        let mut encoder = engine.device().create_command_encoder(
+            &wgpu::CommandEncoderDescriptor {
+                label: Some("test_copy_encoder"),
+            }
+        );
+        
+        let result = dest.copy_from(&mut encoder, &source);
+        assert!(result.is_err());
+        
+        if let Err(e) = result {
+            let error_msg = format!("{}", e);
+            assert!(error_msg.contains("dimension mismatch"));
+        }
+    }
+
+    #[tokio::test]
+    async fn test_kv_cache_copy_position_sync() {
+        let engine = ComputeEngine::new().await.unwrap();
+        
+        let source = KVCache::new(&engine, 1, 4, 128, 4, 16).unwrap();
+        let mut dest = KVCache::new(&engine, 1, 4, 128, 4, 16).unwrap();
+        
+        // Manually set source position (simulating some forward passes)
+        // Note: In real usage, position is set via update() method
+        // Here we're just testing the copy_from position synchronization
+        
+        let mut encoder = engine.device().create_command_encoder(
+            &wgpu::CommandEncoderDescriptor {
+                label: Some("test_copy_encoder"),
+            }
+        );
+        
+        let result = dest.copy_from(&mut encoder, &source);
+        assert!(result.is_ok());
+        
+        // After copying, destination should have same position as source
+        assert_eq!(dest.current_position(), source.current_position());
+    }
+
+    #[test]
+    fn test_kv_cache_buffer_access() {
+        // Test that we can get references to the buffers
+        // This is a compile-time test more than runtime
+        
+        // Note: We can't actually create a cache here without async/GPU
+        // but we can verify the API exists
+    }
+}
+

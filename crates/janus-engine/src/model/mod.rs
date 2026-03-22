@@ -7,12 +7,14 @@
 //! - `output`: Language model head for vocabulary projection
 //! - `sampler`: Token sampling strategies
 //! - `tokenizer`: Text encoding and decoding
+//! - `speculative`: Speculative decoding for accelerated inference
 
 pub mod block;
 pub mod config;
 pub mod output;
 pub mod sampler;
 pub mod tokenizer;
+pub mod speculative;
 
 #[path = "transformer/mod.rs"]
 pub mod model;
@@ -23,3 +25,4 @@ pub use model::{Model, ModelConfig};
 pub use output::{LMHead, LMHeadConfig};
 pub use sampler::{Sampler, SamplerConfig};
 pub use tokenizer::{Tokenizer, TokenizerError};
+pub use speculative::{SpeculativeDecoder, SpeculativeConfig, SpeculativeStats};

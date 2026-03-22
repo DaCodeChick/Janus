@@ -63,6 +63,7 @@ mod constructor;
 mod embedding;
 mod forward;
 mod generation;
+mod speculative_helpers;
 
 #[cfg(test)]
 mod tests;
