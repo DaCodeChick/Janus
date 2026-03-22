@@ -208,9 +208,9 @@ impl TransformerBlock {
             &self.attn_q_weight,
             scratch_q,
             self.config.batch_size,
-            1, // M = 1 token (single-token generation)
-            self.config.hidden_dim,
-            self.config.hidden_dim,
+            1,                      // M = 1 token (single-token generation)
+            self.config.hidden_dim, // N (swapped: weight is [N,K], shader expects [K,N])
+            self.config.hidden_dim, // K (swapped: weight is [N,K], shader expects [K,N])
         )?;
 
         gemm(
@@ -221,9 +221,9 @@ impl TransformerBlock {
             &self.attn_k_weight,
             scratch_k,
             self.config.batch_size,
-            1, // M = 1 token (single-token generation)
-            self.config.hidden_dim,
-            kv_dim,
+            1,                      // M = 1 token (single-token generation)
+            kv_dim,                 // N (swapped: weight is [N,K], shader expects [K,N])
+            self.config.hidden_dim, // K (swapped: weight is [N,K], shader expects [K,N])
         )?;
 
         gemm(
@@ -234,9 +234,9 @@ impl TransformerBlock {
             &self.attn_v_weight,
             scratch_v,
             self.config.batch_size,
-            1, // M = 1 token (single-token generation)
-            self.config.hidden_dim,
-            kv_dim,
+            1,                      // M = 1 token (single-token generation)
+            kv_dim,                 // N (swapped: weight is [N,K], shader expects [K,N])
+            self.config.hidden_dim, // K (swapped: weight is [N,K], shader expects [K,N])
         )?;
 
         // Step 3: Apply RoPE to Q and K (output to separate buffers)
@@ -310,9 +310,9 @@ impl TransformerBlock {
             &self.attn_output_weight,
             scratch_proj_out,
             self.config.batch_size,
-            1, // M = 1 token (single-token generation)
-            self.config.hidden_dim,
-            self.config.hidden_dim,
+            1,                      // M = 1 token (single-token generation)
+            self.config.hidden_dim, // N (swapped: weight is [N,K], shader expects [K,N])
+            self.config.hidden_dim, // K (swapped: weight is [N,K], shader expects [K,N])
         )?;
 
         // Step 7: Residual connection 1
@@ -352,9 +352,9 @@ impl TransformerBlock {
             &self.ffn_gate_weight,
             scratch_gate,
             self.config.batch_size,
-            1, // M = 1 token (single-token generation)
-            self.config.hidden_dim,
-            self.config.ffn_dim,
+            1,                      // M = 1 token (single-token generation)
+            self.config.ffn_dim,    // N (swapped: weight is [N,K], shader expects [K,N])
+            self.config.hidden_dim, // K (swapped: weight is [N,K], shader expects [K,N])
         )?;
 
         // Step 10: Up projection
@@ -366,9 +366,9 @@ impl TransformerBlock {
             &self.ffn_up_weight,
             scratch_up,
             self.config.batch_size,
-            1, // M = 1 token (single-token generation)
-            self.config.hidden_dim,
-            self.config.ffn_dim,
+            1,                      // M = 1 token (single-token generation)
+            self.config.ffn_dim,    // N (swapped: weight is [N,K], shader expects [K,N])
+            self.config.hidden_dim, // K (swapped: weight is [N,K], shader expects [K,N])
         )?;
 
         // Step 11: Apply SiLU activation to gate (write to swiglu buffer temporarily)
@@ -402,9 +402,9 @@ impl TransformerBlock {
             &self.ffn_down_weight,
             scratch_ffn_out,
             self.config.batch_size,
-            1, // M = 1 token (single-token generation)
-            self.config.ffn_dim,
-            self.config.hidden_dim,
+            1,                      // M = 1 token (single-token generation)
+            self.config.hidden_dim, // N (swapped: weight is [N,K], shader expects [K,N])
+            self.config.ffn_dim,    // K (swapped: weight is [N,K], shader expects [K,N])
         )?;
 
         // Step 14: Residual connection 2 (output to final buffer)

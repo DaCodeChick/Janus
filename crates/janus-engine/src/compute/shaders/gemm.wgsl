@@ -73,16 +73,14 @@ fn main(
         }
         
         // ===== COLLABORATIVE LOAD: Each thread loads ONE element into tile_b =====
-        // CRITICAL: PyTorch/HuggingFace stores weights as [out_features, in_features]
-        // This means B is physically [N, K], so we must transpose on read
-        // Additionally, B is packed f16 (2 f16s per u32), so we must unpack on read
-        // NOTE: Matrix B is SHARED across all batch items (no batch offset)
-        let b_row = workgroup_id.x * TILE_SIZE + local_col;  // Note: using local_col for row
-        let b_col = k_start + local_row;                      // Note: using local_row for col
+        // Load weight matrix B which should be [K, N] in memory
+        // Each thread loads one element: B[k, n] where k is along K dimension, n is along N dimension
+        let b_row = k_start + local_row;                      // K dimension (row in B)
+        let b_col = workgroup_id.x * TILE_SIZE + local_col;  // N dimension (col in B)
         
-        if (b_row < uniforms.N && b_col < uniforms.K) {
-            // Calculate global index in the weight matrix [N, K]
-            let global_idx = b_row * uniforms.K + b_col;
+        if (b_row < uniforms.K && b_col < uniforms.N) {
+            // Calculate global index in the weight matrix [K, N] row-major
+            let global_idx = b_row * uniforms.N + b_col;
             
             // Read packed u32 (contains 2 f16 values)
             let packed = matrix_b[global_idx / 2u];
