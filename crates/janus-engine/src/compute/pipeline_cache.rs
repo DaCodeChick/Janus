@@ -21,6 +21,7 @@ pub struct PipelineCache {
     pub attention_shader: wgpu::ShaderModule,
     pub softmax_shader: wgpu::ShaderModule,
     pub update_cache_shader: wgpu::ShaderModule,
+    pub compress_cache_shader: wgpu::ShaderModule,
 }
 
 impl PipelineCache {
@@ -85,7 +86,12 @@ impl PipelineCache {
             source: wgpu::ShaderSource::Wgsl(include_str!("shaders/update_cache.wgsl").into()),
         });
 
-        tracing::info!("Pipeline cache created with {} shader modules", 10);
+        let compress_cache_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("compress_cache_shader_cached"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/compress_cache.wgsl").into()),
+        });
+
+        tracing::info!("Pipeline cache created with {} shader modules", 11);
 
         Self {
             embed_shader,
@@ -98,6 +104,7 @@ impl PipelineCache {
             attention_shader,
             softmax_shader,
             update_cache_shader,
+            compress_cache_shader,
         }
     }
 }

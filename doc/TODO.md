@@ -23,8 +23,12 @@
   - Comprehensive unit tests for statistics and configuration
   - See: `crates/janus-engine/src/model/speculative.rs`
 
-- [ ] **Add KV cache compression**
-  - Compress old KV cache entries to extend context length
+- [x] **Add KV cache compression** ✅
+  - Compress old KV cache entries to extend context length (2-4x effective context)
+  - Sliding window approach with configurable uncompressed window
+  - Automatic compression triggering based on cache fill ratio
+  - GPU-accelerated compression via WGSL shader
+  - Comprehensive unit tests for compression configuration and statistics
   - See: `crates/janus-engine/src/compute/cache.rs`
 ---
 
