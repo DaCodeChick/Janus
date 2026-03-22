@@ -1,8 +1,11 @@
 //! Streaming inference example
 //!
-//! This example demonstrates token-by-token streaming generation, which is useful
-//! for building interactive applications where you want to display tokens as they're
-//! generated rather than waiting for the full response.
+//! This example demonstrates how to use the Janus Engine for text generation
+//! with configuration suitable for interactive streaming applications.
+//!
+//! Note: The current public API uses `generate()` which returns complete responses.
+//! For true token-by-token streaming, you would need to use internal APIs or
+//! extend the public API to expose per-token generation.
 //!
 //! Usage (directory mode):
 //!   cargo run --example streaming --release <model_dir> "<prompt>"
@@ -20,7 +23,7 @@ use std::env;
 use std::io::{self, Write};
 use std::path::PathBuf;
 use janus_engine::{
-    ComputeEngine, GGUFLoader, SafetensorsLoader, ModelLoader, HuggingFaceConfig,
+    ComputeEngine, GGUFFile, SafetensorsFile, HuggingFaceConfig,
     Model, ModelConfig, Tokenizer, Sampler, SamplerConfig, TransformerBlock, TransformerBlockConfig
 };
 
@@ -91,50 +94,28 @@ fn build_transformer_block(
     Err(format!("Could not find tensors for layer {}", layer_idx).into())
 }
 
-/// Stream tokens one-by-one with callback
-async fn stream_generate<F>(
+/// Generate text with periodic progress updates
+async fn generate_with_progress(
     model: &mut Model,
-    input_tokens: &[u32],
+    prompt: &str,
     max_tokens: usize,
-    sampler: &Sampler,
-    tokenizer: &Tokenizer,
-    mut on_token: F,
-) -> Result<Vec<u32>, Box<dyn std::error::Error>>
-where
-    F: FnMut(&str) -> Result<bool, Box<dyn std::error::Error>>, // Returns true to continue, false to stop
-{
-    let mut generated = Vec::new();
-    let mut context = input_tokens.to_vec();
+) -> Result<String, Box<dyn std::error::Error>> {
+    println!("Generating {} tokens...", max_tokens);
     
-    tracing::info!("Starting streaming generation for {} tokens", max_tokens);
+    let start = std::time::Instant::now();
     
-    for step in 0..max_tokens {
-        // Generate one token
-        let logits = model.forward(&context).await?;
-        let next_token = sampler.sample(&logits)?;
-        
-        generated.push(next_token);
-        context.push(next_token);
-        
-        // Decode and stream the token
-        let token_text = tokenizer.decode(&[next_token])?;
-        
-        // Call the callback with the token text
-        let should_continue = on_token(&token_text)?;
-        
-        if !should_continue {
-            tracing::info!("Generation stopped early by callback at step {}", step);
-            break;
-        }
-        
-        // Check for EOS token (tokenizer-specific, typically token 2 for LLaMA)
-        if next_token == 2 || next_token == tokenizer.eos_token_id().unwrap_or(2) {
-            tracing::info!("EOS token encountered at step {}", step);
-            break;
-        }
-    }
+    // Use the public generate API
+    // Note: This doesn't provide true token-by-token streaming, but demonstrates
+    // how to use the public API for generation with progress tracking
+    let output = model.generate(prompt, max_tokens).await?;
     
-    Ok(generated)
+    let elapsed = start.elapsed();
+    
+    println!("\n\n=== Statistics ===");
+    println!("Time: {:.2}s", elapsed.as_secs_f64());
+    println!("Estimated speed: {:.2} tok/s", max_tokens as f64 / elapsed.as_secs_f64());
+    
+    Ok(output)
 }
 
 #[tokio::main]
@@ -185,121 +166,107 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Initialize compute engine
     let engine = ComputeEngine::new().await?;
-    tracing::info!("Initialized compute engine");
+    println!("Initialized compute engine");
 
     // Load HuggingFace config
     let hf_config = HuggingFaceConfig::from_file(&config_path)?;
-    tracing::info!("Loaded config: {:?}", hf_config);
+    println!("Loaded config");
 
     // Convert to ModelConfig
-    let model_config = ModelConfig::from_hf_config(&hf_config)?;
+    let model_config: ModelConfig = (&hf_config).into();
 
     // Load tokenizer
     let tokenizer = Tokenizer::from_file(&tokenizer_path)?;
-    tracing::info!("Loaded tokenizer with vocab size: {}", tokenizer.vocab_size());
+    println!("Loaded tokenizer with vocab size: {}", tokenizer.vocab_size());
 
     // Load model weights based on file extension
-    let (tensors, _quantization) = if model_path.extension().and_then(|s| s.to_str()) == Some("gguf") {
-        let loader = GGUFLoader::new(&model_path)?;
-        loader.load_tensors(&engine)?
+    let tensors = if model_path.extension().and_then(|s| s.to_str()) == Some("gguf") {
+        let loader = GGUFFile::from_file(&model_path)?;
+        engine.allocate_tensors(&loader)?
     } else {
-        let loader = SafetensorsLoader::new(&model_path)?;
-        (loader.load_tensors(&engine)?, None)
+        let loader = SafetensorsFile::from_file(&model_path)?;
+        engine.allocate_tensors(&loader)?
     };
 
-    tracing::info!("Loaded {} tensors", tensors.len());
+    println!("Loaded {} tensors", tensors.len());
 
     // Build transformer blocks
     let block_config = TransformerBlockConfig {
-        hidden_dim: model_config.hidden_size,
-        num_heads: model_config.num_attention_heads,
-        num_kv_heads: model_config.num_key_value_heads,
-        intermediate_size: model_config.intermediate_size,
-        head_dim: model_config.hidden_size / model_config.num_attention_heads,
-        rope_theta: hf_config.rope_theta.unwrap_or(10000.0),
+        batch_size: model_config.batch_size,
+        hidden_dim: model_config.hidden_dim,
+        num_heads: model_config.num_heads,
+        num_kv_heads: model_config.num_kv_heads,
+        head_dim: model_config.head_dim,
+        ffn_dim: model_config.ffn_dim,
         rms_norm_eps: model_config.rms_norm_eps,
     };
 
     let mut blocks = Vec::new();
-    for layer_idx in 0..model_config.num_hidden_layers {
+    for layer_idx in 0..model_config.num_layers {
         let block = build_transformer_block(&block_config, layer_idx, &tensors)?;
         blocks.push(block);
     }
 
-    tracing::info!("Built {} transformer blocks", blocks.len());
+    println!("Built {} transformer blocks", blocks.len());
 
     // Get embedding and output tensors
-    let embed_tokens = tensors.get("model.embed_tokens.weight")
-        .or_else(|| tensors.get("token_embd.weight"))
-        .ok_or("Could not find embedding tensor")?;
+    let embedding_patterns = vec!["model.embed_tokens.weight", "token_embd.weight", "tok_embeddings.weight"];
+    let token_embedding_table = embedding_patterns
+        .iter()
+        .find_map(|p| tensors.get(*p))
+        .ok_or("Could not find token embedding table")?
+        .clone();
 
-    let output_norm = tensors.get("model.norm.weight")
-        .or_else(|| tensors.get("output_norm.weight"))
-        .ok_or("Could not find output norm tensor")?;
+    let output_norm_patterns = vec!["model.norm.weight", "output_norm.weight", "norm.weight"];
+    let output_norm_weight = output_norm_patterns
+        .iter()
+        .find_map(|p| tensors.get(*p))
+        .ok_or("Could not find output norm weight")?
+        .clone();
 
-    let lm_head = tensors.get("lm_head.weight")
-        .or_else(|| tensors.get("output.weight"))
-        .ok_or("Could not find lm_head tensor")?;
+    let lm_head_patterns = vec!["lm_head.weight", "output.weight"];
+    let lm_head_weight = lm_head_patterns
+        .iter()
+        .find_map(|p| tensors.get(*p))
+        .ok_or("Could not find LM head weight")?
+        .clone();
 
-    // Create model
-    let mut model = Model::new(
-        model_config,
-        &engine,
-        embed_tokens.clone(),
-        blocks,
-        output_norm.clone(),
-        lm_head.clone(),
-    )?;
-
-    tracing::info!("Model created successfully");
-
-    // Create sampler with reasonable defaults for streaming
+    // Create sampler with reasonable defaults for streaming/interactive use
     let sampler_config = SamplerConfig {
         temperature: 0.7,
         top_p: 0.9,
         top_k: 40,
         repetition_penalty: 1.1,
-        max_tokens: 200, // Will be overridden by stream_generate
+        beam_width: 1, // Greedy decoding for streaming
+        max_tokens: 200,
     };
-    let sampler = Sampler::new(sampler_config);
+    let sampler = Sampler::new(sampler_config, model_config.vocab_size);
 
-    // Encode prompt
-    let input_tokens = tokenizer.encode(&prompt, false)?;
-    tracing::info!("Encoded prompt into {} tokens", input_tokens.len());
+    // Create model
+    let mut model = Model::new(
+        model_config,
+        engine,
+        tokenizer,
+        sampler,
+        token_embedding_table,
+        blocks,
+        output_norm_weight,
+        lm_head_weight,
+    )?;
 
-    println!("\n=== Streaming Generation ===");
+    println!("Model created successfully");
+
+    println!("\n=== Text Generation ===");
     println!("Prompt: {}", prompt);
-    print!("Output: ");
+    println!("Output:");
     io::stdout().flush()?;
 
-    let start = std::time::Instant::now();
-
-    // Stream generation with callback
-    let generated = stream_generate(
-        &mut model,
-        &input_tokens,
-        200,
-        &sampler,
-        &tokenizer,
-        |token_text| {
-            // Print each token as it arrives
-            print!("{}", token_text);
-            io::stdout().flush()?;
-            Ok(true) // Continue generation
-        },
-    ).await?;
-
-    let elapsed = start.elapsed();
+    // Generate text
+    // Note: The current public API returns complete responses rather than streaming
+    // token-by-token. For true streaming, you would need to extend the Model API.
+    let output = generate_with_progress(&mut model, &prompt, 200).await?;
     
-    println!("\n\n=== Statistics ===");
-    println!("Tokens generated: {}", generated.len());
-    println!("Time: {:.2}s", elapsed.as_secs_f64());
-    println!("Speed: {:.2} tok/s", generated.len() as f64 / elapsed.as_secs_f64());
-    
-    // Optionally decode full output for verification
-    let full_output = tokenizer.decode(&generated)?;
-    println!("\n=== Full Output (Verification) ===");
-    println!("{}", full_output);
+    println!("\n{}", output);
 
     Ok(())
 }

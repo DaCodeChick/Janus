@@ -29,14 +29,12 @@
 
 use janus_api::{
     JanusPlugin, JanusPlugin_TO, PluginInfo, PluginErrorCode, PromptContext,
-    RoutingPreference, StreamCallback, TokenChunk,
+    RoutingPreference, StreamCallback, ResponseChunk, PluginCapabilities,
 };
 use abi_stable::{
-    export_root_module,
-    prefix_type::PrefixTypeTrait,
     sabi_extern_fn,
     sabi_trait::TD_Opaque,
-    std_types::{RResult, RStr, RString, RVec, RBox},
+    std_types::{RResult, RStr, RString, RBox},
 };
 use std::sync::{Arc, Mutex};
 
@@ -108,11 +106,11 @@ fn analyze_sentiment(text: &str) -> f32 {
     let text_lower = text.to_lowercase();
     
     let positive_count = positive_words.iter()
-        .filter(|word| text_lower.contains(word))
+        .filter(|word| text_lower.contains(*word))
         .count() as f32;
     
     let negative_count = negative_words.iter()
-        .filter(|word| text_lower.contains(word))
+        .filter(|word| text_lower.contains(*word))
         .count() as f32;
     
     // Return sentiment score (-1.0 to 1.0)
@@ -147,7 +145,7 @@ impl JanusPlugin for SentimentPlugin {
             }
             Err(e) => {
                 tracing::error!("Failed to parse config JSON: {}", e);
-                RResult::RErr(PluginErrorCode::ConfigError)
+                RResult::RErr(PluginErrorCode::InvalidInput)
             }
         }
     }
@@ -158,7 +156,9 @@ impl JanusPlugin for SentimentPlugin {
             version: RStr::from("1.0.0"),
             author: RStr::from("Janus Team"),
             description: RStr::from("Adjusts generation parameters based on prompt sentiment"),
-            capabilities: RVec::new(),
+            capabilities: PluginCapabilities::STREAMING,
+            max_context_tokens: 4096,
+            preferred_batch_size: 1,
         }
     }
 
@@ -182,9 +182,9 @@ impl JanusPlugin for SentimentPlugin {
         // Route based on sentiment complexity
         // Highly emotional prompts (positive or negative) might benefit from cloud models
         if sentiment.abs() > 0.7 {
-            RoutingPreference::PreferCloud
+            RoutingPreference::Cloud
         } else {
-            RoutingPreference::PreferLocal
+            RoutingPreference::Local
         }
     }
 
@@ -216,24 +216,17 @@ impl JanusPlugin for SentimentPlugin {
         ];
         
         for (i, token) in tokens.iter().enumerate() {
-            let chunk = TokenChunk {
-                text: RStr::from(token),
-                token_id: i as u32,
+            let chunk = ResponseChunk {
+                data: RStr::from(*token),
                 is_final: i == tokens.len() - 1,
+                token_count: (i + 1) as u32,
             };
             
             // Call the streaming callback
-            match callback.call(chunk) {
-                RResult::ROk(should_continue) => {
-                    if !should_continue {
-                        tracing::info!("Streaming stopped by callback");
-                        break;
-                    }
-                }
-                RResult::RErr(e) => {
-                    tracing::error!("Streaming callback error: {:?}", e);
-                    return RResult::RErr(PluginErrorCode::InferenceError);
-                }
+            let result = callback.call(&chunk);
+            if result != PluginErrorCode::Success {
+                tracing::error!("Streaming callback error: {:?}", result);
+                return RResult::RErr(PluginErrorCode::InferenceFailed);
             }
             
             // Simulate token generation delay
@@ -370,24 +363,115 @@ pub struct GenerationParams {
     pub max_tokens: usize,
 }
 
-/// Helper: Create a streaming callback that collects tokens
-pub fn create_collecting_callback() -> (StreamCallback, Arc<Mutex<Vec<String>>>) {
-    let collected = Arc::new(Mutex::new(Vec::new()));
-    let collected_clone = collected.clone();
-    
-    let callback = StreamCallback::new(move |chunk| {
-        if let Ok(mut tokens) = collected_clone.lock() {
-            tokens.push(chunk.text.to_string());
-        }
-        RResult::ROk(true) // Continue streaming
-    });
-    
-    (callback, collected)
+/// Helper: Create a simple streaming callback that prints tokens
+/// 
+/// Note: StreamCallback requires an `extern "C"` function pointer and cannot
+/// capture variables. For collecting tokens, you would need to use global state
+/// or thread-local storage.
+pub extern "C" fn simple_print_callback(chunk: &ResponseChunk) -> PluginErrorCode {
+    print!("{}", chunk.data.as_str());
+    if chunk.is_final {
+        println!();
+    }
+    PluginErrorCode::Success
+}
+
+/// Helper: Create a streaming callback that returns success
+pub fn create_simple_callback() -> StreamCallback {
+    StreamCallback::new(simple_print_callback)
 }
 
 // ============================================================================
 // Testing utilities
 // ============================================================================
+
+/// Example main function demonstrating plugin usage
+fn main() {
+    // Initialize tracing
+    tracing_subscriber::fmt::init();
+    
+    println!("=== Janus Plugin Development Example ===\n");
+    
+    // Create plugin instance
+    let mut plugin = SentimentPlugin::new();
+    println!("Created SentimentPlugin");
+    
+    // Initialize with config
+    let config = r#"{"temperature_boost": 0.3, "enabled": true, "max_tokens": 200}"#;
+    match plugin.init(RStr::from(config)) {
+        RResult::ROk(_) => println!("Plugin initialized with config"),
+        RResult::RErr(e) => {
+            eprintln!("Failed to initialize plugin: {:?}", e);
+            return;
+        }
+    }
+    
+    // Get plugin info
+    let info = plugin.info();
+    println!("\nPlugin Info:");
+    println!("  Name: {}", info.name);
+    println!("  Version: {}", info.version);
+    println!("  Author: {}", info.author);
+    println!("  Description: {}", info.description);
+    println!("  Max context tokens: {}", info.max_context_tokens);
+    println!("  Preferred batch size: {}", info.preferred_batch_size);
+    
+    // Test sentiment analysis
+    let test_prompts = [
+        "I'm feeling absolutely wonderful today!",
+        "This is the worst day ever",
+        "The weather seems normal",
+    ];
+    
+    println!("\nTesting sentiment analysis:");
+    for prompt in &test_prompts {
+        let sentiment = analyze_sentiment(prompt);
+        println!("  '{}' -> sentiment: {:.2}", prompt, sentiment);
+    }
+    
+    // Create a prompt context
+    let context = PromptContext {
+        prompt: RStr::from("I'm feeling great today! Tell me something positive."),
+        system_prompt: RStr::from("You are a helpful assistant."),
+        max_tokens: 100,
+        temperature: 0.7,
+        top_p: 0.9,
+        context_size: 2048,
+        metadata_json: RStr::from("{}"),
+    };
+    
+    // Analyze routing preference
+    let preference = plugin.analyze(&context);
+    println!("\nRouting preference: {:?}", preference);
+    
+    // Test blocking inference
+    println!("\nTesting blocking inference...");
+    match plugin.infer_blocking(&context) {
+        RResult::ROk(response) => {
+            println!("Response: {}", response);
+        }
+        RResult::RErr(e) => {
+            eprintln!("Inference failed: {:?}", e);
+        }
+    }
+    
+    // Test streaming inference
+    println!("\nTesting streaming inference...");
+    print!("Streamed output: ");
+    let callback = create_simple_callback();
+    match plugin.infer_stream(&context, callback) {
+        RResult::ROk(_) => {
+            println!("\nStreaming completed successfully");
+        }
+        RResult::RErr(e) => {
+            eprintln!("\nStreaming failed: {:?}", e);
+        }
+    }
+    
+    // Shutdown
+    plugin.shutdown();
+    println!("\nPlugin shut down");
+}
 
 #[cfg(test)]
 mod tests {

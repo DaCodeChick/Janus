@@ -15,7 +15,7 @@ use std::collections::HashMap;
 use std::env;
 use std::path::PathBuf;
 use janus_engine::{
-    ComputeEngine, GGUFLoader, SafetensorsLoader, ModelLoader, HuggingFaceConfig,
+    ComputeEngine, GGUFFile, SafetensorsFile, ModelLoader, HuggingFaceConfig,
     Model, ModelConfig, Tokenizer, Sampler, TransformerBlock, TransformerBlockConfig
 };
 
@@ -174,7 +174,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     
     let tensors = match extension {
         "gguf" => {
-            let loader = GGUFLoader::from_file(&model_path)?;
+            let loader = GGUFFile::from_file(&model_path)?;
             println!("   Format: GGUF");
             
             // Show model metadata
@@ -187,7 +187,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             engine.allocate_tensors(&loader)?
         }
         "safetensors" => {
-            let loader = SafetensorsLoader::from_file(&model_path)?;
+            let loader = SafetensorsFile::from_file(&model_path)?;
             println!("   Format: Safetensors");
             
             // Allocate tensors to GPU
@@ -204,6 +204,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Build transformer blocks
     println!("\n>> Building transformer blocks...");
     let block_config = TransformerBlockConfig {
+        batch_size: model_config.batch_size,
         hidden_dim: model_config.hidden_dim,
         num_heads: model_config.num_heads,
         num_kv_heads: model_config.num_kv_heads,
