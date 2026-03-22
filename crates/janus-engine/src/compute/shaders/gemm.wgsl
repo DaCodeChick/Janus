@@ -79,9 +79,10 @@ fn main(
         // ===== COLLABORATIVE LOAD: Each thread loads ONE element into tile_b =====
         // Load weight matrix B which is stored as [N, K] in memory (PyTorch format)
         // For matrix-transpose multiply: C[i,j] = sum_k A[i,k] * B[j,k]
-        // We want to efficiently compute this by loading B[j,k] for the j corresponding to this workgroup
-        let b_n = workgroup_id.x * TILE_SIZE + local_row;  // Which N we're computing (row index in B)
-        let b_k = k_start + local_col;                      // K index (column in B)
+        // We need tile_b[j][k] to contain B[j,k] for efficient access in the computation loop
+        // Thread[local_row, local_col] loads B[global_j, global_k] and stores transposed
+        let b_n = workgroup_id.x * TILE_SIZE + local_col;  // N dimension (column of output)
+        let b_k = k_start + local_row;                      // K dimension (contraction index)
         
         if (b_n < uniforms.N && b_k < uniforms.K) {
             // Calculate global index in the weight matrix [N, K] row-major: B[n, k]
@@ -97,10 +98,11 @@ fn main(
             let is_odd = (global_idx % 2u) != 0u;
             let value = select(unpacked.x, unpacked.y, is_odd);
             
-            // Store in tile: tile_b[local_row][local_col] = B[n, k]
-            tile_b[local_row * TILE_SIZE + local_col] = value;
+            // Store TRANSPOSED in tile: We loaded B[n, k], store at tile_b[n][k]
+            // But n = local_col and k = local_row, so store at tile_b[local_col][local_row]
+            tile_b[local_col * TILE_SIZE + local_row] = value;
         } else {
-            tile_b[local_row * TILE_SIZE + local_col] = 0.0;
+            tile_b[local_col * TILE_SIZE + local_row] = 0.0;
         }
         
         // ===== BARRIER: Wait for all threads to finish loading the tiles =====

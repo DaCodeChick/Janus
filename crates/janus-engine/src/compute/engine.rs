@@ -131,6 +131,8 @@ impl ComputeEngine {
     fn bf16_to_packed_f16(bf16_data: &[u8]) -> Vec<u32> {
         let num_elements = bf16_data.len() / 2;
         let mut f16_data = Vec::with_capacity(num_elements);
+        let mut nan_count = 0;
+        let mut inf_count = 0;
 
         for i in 0..num_elements {
             // Read BF16 as u16 (little-endian)
@@ -139,9 +141,26 @@ impl ComputeEngine {
             // Convert BF16 -> F32 -> F16
             let f32_bits = (bf16 as u32) << 16;
             let f32_value = f32::from_bits(f32_bits);
+            
+            // Check for NaN/Inf in source data
+            if f32_value.is_nan() {
+                nan_count += 1;
+            } else if f32_value.is_infinite() {
+                inf_count += 1;
+            }
+            
             let f16_value = f16::from_f32(f32_value);
             
             f16_data.push(f16_value);
+        }
+
+        if nan_count > 0 || inf_count > 0 {
+            tracing::warn!(
+                "BF16 conversion: found {} NaNs and {} Infs in {} elements",
+                nan_count,
+                inf_count,
+                num_elements
+            );
         }
 
         Self::pack_f16_to_u32(&f16_data)
