@@ -107,7 +107,8 @@ fn compute_qk_scores(
     
     // Scale by 1/sqrt(head_dim) and store
     // Score index: [batch_idx][head_idx][key_pos]
-    let score_idx = batch_idx * params.num_heads * params.seq_len + head_idx * params.seq_len + key_pos;
+    // CRITICAL: Use max_seq_len for stride, not seq_len, since buffer is sized [batch, heads, max_seq_len]
+    let score_idx = batch_idx * params.num_heads * max_seq_len + head_idx * max_seq_len + key_pos;
     scores[score_idx] = dot_product * params.scale;
 }
 
@@ -167,7 +168,8 @@ fn apply_attention(
     
     for (var pos = 0u; pos < seq_len; pos++) {
         // Probability index: [batch_idx][head_idx][pos]
-        let prob_idx = batch_idx * num_heads * seq_len + head_idx * seq_len + pos;
+        // CRITICAL: Use max_seq_len for stride, not seq_len, since buffer is sized [batch, heads, max_seq_len]
+        let prob_idx = batch_idx * num_heads * max_seq_len + head_idx * max_seq_len + pos;
         
         // Value index: [batch_idx][layer_idx][pos][kv_head_idx][dim_idx]
         let value_idx = batch_offset + layer_offset + pos * num_kv_heads * head_dim + kv_head_idx * head_dim + dim_idx;

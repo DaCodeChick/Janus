@@ -36,7 +36,7 @@ struct SoftmaxUniforms {
     seq_len: u32,
     num_heads: u32,
     batch_size: u32,
-    _pad: u32,
+    max_seq_len: u32,
 }
 
 /// Compute scaled dot-product attention with Grouped Query Attention (GQA) support - Batched
@@ -120,7 +120,7 @@ pub fn compute_attention(
         seq_len,
         num_heads,
         batch_size: batch_size * num_heads, // Total number of softmax operations
-        _pad: 0,
+        max_seq_len,
     };
     let softmax_uniforms_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("softmax_uniforms"),

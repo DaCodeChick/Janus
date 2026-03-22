@@ -10,9 +10,10 @@
 // Layout: Each workgroup processes one row (one query position's attention scores)
 
 struct Params {
-    seq_len: u32,        // Length of the sequence to apply softmax over
+    seq_len: u32,        // Length of the sequence to apply softmax over (current sequence length)
     num_heads: u32,      // Number of attention heads
     batch_size: u32,     // Number of rows to process
+    max_seq_len: u32,    // Maximum sequence length (buffer stride)
 }
 
 @group(0) @binding(0) var<storage, read> input: array<f32>;      // Input scores [batch_size][seq_len]
@@ -41,7 +42,8 @@ fn main(
     
     // Each thread processes multiple elements if seq_len > 256
     for (var i = thread_idx; i < seq_len; i += 256u) {
-        let idx = row_idx * seq_len + i;
+        // CRITICAL: Use max_seq_len for stride since buffer is [batch, heads, max_seq_len]
+        let idx = row_idx * params.max_seq_len + i;
         local_max = max(local_max, input[idx]);
     }
     
@@ -63,7 +65,8 @@ fn main(
     var local_sum: f32 = 0.0;
     
     for (var i = thread_idx; i < seq_len; i += 256u) {
-        let idx = row_idx * seq_len + i;
+        // CRITICAL: Use max_seq_len for stride since buffer is [batch, heads, max_seq_len]
+        let idx = row_idx * params.max_seq_len + i;
         let exp_val = exp(input[idx] - max_val);
         output[idx] = exp_val;  // Store intermediate exp values
         local_sum += exp_val;
@@ -85,7 +88,8 @@ fn main(
     
     // Pass 3: Normalize by dividing by sum
     for (var i = thread_idx; i < seq_len; i += 256u) {
-        let idx = row_idx * seq_len + i;
+        // CRITICAL: Use max_seq_len for stride since buffer is [batch, heads, max_seq_len]
+        let idx = row_idx * params.max_seq_len + i;
         output[idx] = output[idx] / sum_val;
     }
 }
