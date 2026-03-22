@@ -106,7 +106,7 @@ impl Model {
             &self.lm_head_weight,
             &self.logits_buf,
             self.config.batch_size,
-            self.config.hidden_dim,
+            1, // M = 1 token (single-token generation)
             self.config.hidden_dim,
             self.config.vocab_size,
         )?;
@@ -232,7 +232,7 @@ impl Model {
             &self.lm_head_weight,
             &self.logits_buf,
             self.config.batch_size,
-            self.config.hidden_dim,
+            1, // M = 1 token per sequence (batch dimension is separate)
             self.config.hidden_dim,
             self.config.vocab_size,
         )?;

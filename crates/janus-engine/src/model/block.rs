@@ -208,7 +208,7 @@ impl TransformerBlock {
             &self.attn_q_weight,
             scratch_q,
             self.config.batch_size,
-            self.config.hidden_dim,
+            1, // M = 1 token (single-token generation)
             self.config.hidden_dim,
             self.config.hidden_dim,
         )?;
@@ -221,7 +221,7 @@ impl TransformerBlock {
             &self.attn_k_weight,
             scratch_k,
             self.config.batch_size,
-            self.config.hidden_dim,
+            1, // M = 1 token (single-token generation)
             self.config.hidden_dim,
             kv_dim,
         )?;
@@ -234,7 +234,7 @@ impl TransformerBlock {
             &self.attn_v_weight,
             scratch_v,
             self.config.batch_size,
-            self.config.hidden_dim,
+            1, // M = 1 token (single-token generation)
             self.config.hidden_dim,
             kv_dim,
         )?;
@@ -310,7 +310,7 @@ impl TransformerBlock {
             &self.attn_output_weight,
             scratch_proj_out,
             self.config.batch_size,
-            self.config.hidden_dim,
+            1, // M = 1 token (single-token generation)
             self.config.hidden_dim,
             self.config.hidden_dim,
         )?;
@@ -352,7 +352,7 @@ impl TransformerBlock {
             &self.ffn_gate_weight,
             scratch_gate,
             self.config.batch_size,
-            self.config.hidden_dim,
+            1, // M = 1 token (single-token generation)
             self.config.hidden_dim,
             self.config.ffn_dim,
         )?;
@@ -366,7 +366,7 @@ impl TransformerBlock {
             &self.ffn_up_weight,
             scratch_up,
             self.config.batch_size,
-            self.config.hidden_dim,
+            1, // M = 1 token (single-token generation)
             self.config.hidden_dim,
             self.config.ffn_dim,
         )?;
@@ -402,7 +402,7 @@ impl TransformerBlock {
             &self.ffn_down_weight,
             scratch_ffn_out,
             self.config.batch_size,
-            self.config.ffn_dim,
+            1, // M = 1 token (single-token generation)
             self.config.ffn_dim,
             self.config.hidden_dim,
         )?;
