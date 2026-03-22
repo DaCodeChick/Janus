@@ -1,10 +1,14 @@
-// General Matrix-Matrix Multiplication (GEMM): C = A * B
+// General Matrix-Matrix Multiplication (GEMM): C = A * B^T
 // A: [batch_size, M, K] matrix (dynamic activations, f32)
-// B: [K, N] matrix (static weights, packed f16)
+// B: [N, K] matrix (static weights, packed f16) - stored in PyTorch format
 // C: [batch_size, M, N] matrix (output, f32)
+//
+// This computes C[i,j] = sum_k A[i,k] * B[j,k] (matrix-transpose-multiply)
+// which is equivalent to C = A @ B.T in PyTorch notation.
 //
 // Matrix A is f32 (dynamic hidden states) with batch dimension.
 // Matrix B is packed f16 (2 f16s per u32) for 50% VRAM reduction (shared across batch).
+// B is stored in PyTorch [out_features, in_features] = [N, K] row-major layout.
 // All computation happens in f32 precision (mixed-precision inference).
 // Optimized implementation using tiled matrix multiplication with shared memory.
 
@@ -73,14 +77,15 @@ fn main(
         }
         
         // ===== COLLABORATIVE LOAD: Each thread loads ONE element into tile_b =====
-        // Load weight matrix B which should be [K, N] in memory
-        // Each thread loads one element: B[k, n] where k is along K dimension, n is along N dimension
-        let b_row = k_start + local_row;                      // K dimension (row in B)
-        let b_col = workgroup_id.x * TILE_SIZE + local_col;  // N dimension (col in B)
+        // Load weight matrix B which is stored as [N, K] in memory (PyTorch format)
+        // For matrix-transpose multiply: C[i,j] = sum_k A[i,k] * B[j,k]
+        // We want to efficiently compute this by loading B[j,k] for the j corresponding to this workgroup
+        let b_n = workgroup_id.x * TILE_SIZE + local_row;  // Which N we're computing (row index in B)
+        let b_k = k_start + local_col;                      // K index (column in B)
         
-        if (b_row < uniforms.K && b_col < uniforms.N) {
-            // Calculate global index in the weight matrix [K, N] row-major
-            let global_idx = b_row * uniforms.N + b_col;
+        if (b_n < uniforms.N && b_k < uniforms.K) {
+            // Calculate global index in the weight matrix [N, K] row-major: B[n, k]
+            let global_idx = b_n * uniforms.K + b_k;
             
             // Read packed u32 (contains 2 f16 values)
             let packed = matrix_b[global_idx / 2u];
@@ -92,6 +97,7 @@ fn main(
             let is_odd = (global_idx % 2u) != 0u;
             let value = select(unpacked.x, unpacked.y, is_odd);
             
+            // Store in tile: tile_b[local_row][local_col] = B[n, k]
             tile_b[local_row * TILE_SIZE + local_col] = value;
         } else {
             tile_b[local_row * TILE_SIZE + local_col] = 0.0;
@@ -101,8 +107,11 @@ fn main(
         workgroupBarrier();
         
         // ===== COMPUTE: Accumulate dot product using shared memory =====
+        // We want: C[row, col] = sum_k A[row, k] * B[col, k]
+        // tile_a[local_row][k] contains A[row, k_start+k]
+        // tile_b[local_col][k] contains B[col, k_start+k] (in row-major: tile_b[local_col * TILE_SIZE + k])
         for (var k = 0u; k < TILE_SIZE; k = k + 1u) {
-            sum = sum + tile_a[local_row * TILE_SIZE + k] * tile_b[k * TILE_SIZE + local_col];
+            sum = sum + tile_a[local_row * TILE_SIZE + k] * tile_b[local_col * TILE_SIZE + k];
         }
         
         // ===== BARRIER: Wait for all threads to finish computing before loading next tile =====

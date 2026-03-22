@@ -107,8 +107,8 @@ impl Model {
             &self.logits_buf,
             self.config.batch_size,
             1, // M = 1 token (single-token generation)
-            self.config.vocab_size, // N (swapped: weight is [N,K], shader expects [K,N])
-            self.config.hidden_dim, // K (swapped: weight is [N,K], shader expects [K,N])
+            self.config.hidden_dim, // K = input dimension
+            self.config.vocab_size, // N = output dimension (weight is [vocab_size, hidden_dim])
         )?;
 
         // Step 5: Submit all operations in a SINGLE batch
@@ -233,8 +233,8 @@ impl Model {
             &self.logits_buf,
             self.config.batch_size,
             1, // M = 1 token per sequence (batch dimension is separate)
-            self.config.vocab_size, // N (swapped: weight is [N,K], shader expects [K,N])
-            self.config.hidden_dim, // K (swapped: weight is [N,K], shader expects [K,N])
+            self.config.hidden_dim, // K = input dimension
+            self.config.vocab_size, // N = output dimension (weight is [vocab_size, hidden_dim])
         )?;
 
         // Step 5: Submit all operations in a SINGLE batch

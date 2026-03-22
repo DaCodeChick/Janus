@@ -209,8 +209,8 @@ impl TransformerBlock {
             scratch_q,
             self.config.batch_size,
             1,                      // M = 1 token (single-token generation)
-            self.config.hidden_dim, // N (swapped: weight is [N,K], shader expects [K,N])
-            self.config.hidden_dim, // K (swapped: weight is [N,K], shader expects [K,N])
+            self.config.hidden_dim, // K = input dimension
+            self.config.hidden_dim, // N = output dimension (weight is [N,K])
         )?;
 
         gemm(
@@ -222,8 +222,8 @@ impl TransformerBlock {
             scratch_k,
             self.config.batch_size,
             1,                      // M = 1 token (single-token generation)
-            kv_dim,                 // N (swapped: weight is [N,K], shader expects [K,N])
-            self.config.hidden_dim, // K (swapped: weight is [N,K], shader expects [K,N])
+            self.config.hidden_dim, // K = input dimension
+            kv_dim,                 // N = output dimension (weight is [N,K])
         )?;
 
         gemm(
@@ -235,8 +235,8 @@ impl TransformerBlock {
             scratch_v,
             self.config.batch_size,
             1,                      // M = 1 token (single-token generation)
-            kv_dim,                 // N (swapped: weight is [N,K], shader expects [K,N])
-            self.config.hidden_dim, // K (swapped: weight is [N,K], shader expects [K,N])
+            self.config.hidden_dim, // K = input dimension
+            kv_dim,                 // N = output dimension (weight is [N,K])
         )?;
 
         // Step 3: Apply RoPE to Q and K (output to separate buffers)
@@ -311,8 +311,8 @@ impl TransformerBlock {
             scratch_proj_out,
             self.config.batch_size,
             1,                      // M = 1 token (single-token generation)
-            self.config.hidden_dim, // N (swapped: weight is [N,K], shader expects [K,N])
-            self.config.hidden_dim, // K (swapped: weight is [N,K], shader expects [K,N])
+            self.config.hidden_dim, // K = input dimension
+            self.config.hidden_dim, // N = output dimension (weight is [N,K])
         )?;
 
         // Step 7: Residual connection 1
@@ -353,8 +353,8 @@ impl TransformerBlock {
             scratch_gate,
             self.config.batch_size,
             1,                      // M = 1 token (single-token generation)
-            self.config.ffn_dim,    // N (swapped: weight is [N,K], shader expects [K,N])
-            self.config.hidden_dim, // K (swapped: weight is [N,K], shader expects [K,N])
+            self.config.hidden_dim, // K = input dimension
+            self.config.ffn_dim,    // N = output dimension (weight is [N,K])
         )?;
 
         // Step 10: Up projection
@@ -367,8 +367,8 @@ impl TransformerBlock {
             scratch_up,
             self.config.batch_size,
             1,                      // M = 1 token (single-token generation)
-            self.config.ffn_dim,    // N (swapped: weight is [N,K], shader expects [K,N])
-            self.config.hidden_dim, // K (swapped: weight is [N,K], shader expects [K,N])
+            self.config.hidden_dim, // K = input dimension
+            self.config.ffn_dim,    // N = output dimension (weight is [N,K])
         )?;
 
         // Step 11: Apply SiLU activation to gate (write to swiglu buffer temporarily)
@@ -403,8 +403,8 @@ impl TransformerBlock {
             scratch_ffn_out,
             self.config.batch_size,
             1,                      // M = 1 token (single-token generation)
-            self.config.hidden_dim, // N (swapped: weight is [N,K], shader expects [K,N])
-            self.config.ffn_dim,    // K (swapped: weight is [N,K], shader expects [K,N])
+            self.config.ffn_dim,    // K = input dimension
+            self.config.hidden_dim, // N = output dimension (weight is [N,K])
         )?;
 
         // Step 14: Residual connection 2 (output to final buffer)
