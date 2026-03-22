@@ -240,11 +240,6 @@ pub fn gemm(
     let device = engine.device();
     let shader = &pipeline_cache.gemm_shader;
 
-    // Debug logging
-    tracing::debug!("GEMM: batch_size={}, M={}, K={}, N={}", batch_size, m, k, n);
-    tracing::debug!("GEMM: matrix_a size={}, matrix_b size={}, output size={}", 
-        matrix_a.size(), matrix_b.size(), output.size());
-
     // Create uniforms buffer
     let uniforms = GemmUniforms {
         batch_size,
