@@ -202,6 +202,7 @@ struct GemmUniforms {
     m: u32,
     k: u32,
     n: u32,
+    _pad: [u32; 12], // Padding to 64 bytes (WGSL uniform alignment requirement)
 }
 
 /// Perform matrix-matrix multiplication (GEMM): C = A * B
@@ -245,6 +246,7 @@ pub fn gemm(
         m,
         k,
         n,
+        _pad: [0; 12],
     };
     let uniforms_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("gemm_uniforms"),
