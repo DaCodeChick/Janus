@@ -35,7 +35,13 @@ struct Params {
     layer_idx: u32,     // Transformer layer index
     max_seq_len: u32,   // Maximum sequence length
     num_layers: u32,    // Total number of transformer layers (for cache indexing)
-    _pad: vec3<u32>,    // Padding for alignment
+    _pad0: u32,         // Padding to 64 bytes (16*4) for WGSL uniform alignment
+    _pad1: u32,
+    _pad2: u32,
+    _pad3: u32,
+    _pad4: u32,
+    _pad5: u32,
+    _pad6: u32,
 }
 
 // Step 1: Compute QK^T scores (batched)

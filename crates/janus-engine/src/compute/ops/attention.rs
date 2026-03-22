@@ -25,7 +25,7 @@ struct AttentionUniforms {
     layer_idx: u32,
     max_seq_len: u32,
     num_layers: u32,
-    _pad: [u32; 3], // Padding for alignment (12 u32s total = 48 bytes)
+    _pad: [u32; 7], // Padding to 64 bytes (WGSL uniform alignment requirement)
 }
 
 /// Uniforms structure for Softmax operation
@@ -109,7 +109,7 @@ pub fn compute_attention(
         layer_idx,
         max_seq_len,
         num_layers,
-        _pad: [0; 3],
+        _pad: [0; 7],
     };
     let attention_uniforms_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("attention_uniforms"),
