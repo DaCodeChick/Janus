@@ -27,6 +27,14 @@ pub struct SamplerConfig {
     pub repetition_penalty: f32,
     /// Beam width for beam search (1 = disabled, uses greedy/temperature sampling)
     pub beam_width: u32,
+    /// Maximum number of tokens to generate (default: 128)
+    /// 
+    /// Typical values:
+    /// - 32-64: Very short responses
+    /// - 128: Short responses (default)
+    /// - 512: Medium responses
+    /// - 2048+: Long-form generation
+    pub max_tokens: usize,
 }
 
 /// A beam hypothesis for beam search
@@ -46,6 +54,7 @@ impl Default for SamplerConfig {
             top_p: 1.0,
             repetition_penalty: 1.15,
             beam_width: 1, // Beam search disabled by default
+            max_tokens: 128, // Default to short responses
         }
     }
 }
@@ -75,6 +84,43 @@ impl Sampler {
     /// * `vocab_size` - Size of the model's vocabulary
     pub fn greedy(vocab_size: u32) -> Self {
         Self::new(SamplerConfig::default(), vocab_size)
+    }
+
+    /// Create a sampler with temperature sampling
+    ///
+    /// # Arguments
+    /// * `vocab_size` - Size of the model's vocabulary
+    /// * `temperature` - Sampling temperature (higher = more random)
+    /// * `top_k` - Top-k filtering (0 = disabled)
+    /// * `top_p` - Top-p/nucleus filtering (1.0 = disabled)
+    ///
+    /// # Example
+    /// ```no_run
+    /// # use janus_engine::Sampler;
+    /// let sampler = Sampler::with_temperature(32000, 0.7, 40, 0.95);
+    /// ```
+    pub fn with_temperature(vocab_size: u32, temperature: f32, top_k: u32, top_p: f32) -> Self {
+        Self::new(
+            SamplerConfig {
+                temperature,
+                top_k,
+                top_p,
+                ..Default::default()
+            },
+            vocab_size,
+        )
+    }
+
+    /// Set maximum tokens to generate
+    ///
+    /// # Arguments
+    /// * `max_tokens` - Maximum number of tokens to generate
+    ///
+    /// # Returns
+    /// Self for method chaining
+    pub fn with_max_tokens(mut self, max_tokens: usize) -> Self {
+        self.config.max_tokens = max_tokens;
+        self
     }
 
     /// Sample the next token from logits
