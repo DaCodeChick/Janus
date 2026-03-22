@@ -56,13 +56,14 @@ impl ChatCompletionHandler {
         let max_tokens = request.max_tokens.unwrap_or(128);
 
         // Get stop strings
-        let mut stop_strings = request.stop.clone().unwrap_or_default();
+        let mut stop_strings: Vec<String> = request.stop.clone().unwrap_or_default();
         
         // Add template-specific stop tokens
         let template_stops = state.chat_formatter.stop_tokens();
-        for stop in template_stops {
-            if !stop_strings.contains(&stop) {
-                stop_strings.push(stop);
+        for &stop in template_stops {
+            let stop_string = stop.to_string();
+            if !stop_strings.contains(&stop_string) {
+                stop_strings.push(stop_string);
             }
         }
 
@@ -218,7 +219,13 @@ impl ChatCompletionHandler {
                         }],
                     };
 
-                    let data = serde_json::to_string(&chunk).ok()?;
+                    let data = match serde_json::to_string(&chunk) {
+                        Ok(s) => s,
+                        Err(e) => {
+                            tracing::error!("Failed to serialize SSE chunk: {}", e);
+                            return None;
+                        }
+                    };
                     let event = Event::default().data(data);
                     return Some((
                         Ok(event),
@@ -244,7 +251,13 @@ impl ChatCompletionHandler {
                             }],
                         };
 
-                        let data = serde_json::to_string(&chunk).ok()?;
+                        let data = match serde_json::to_string(&chunk) {
+                            Ok(s) => s,
+                            Err(e) => {
+                                tracing::error!("Failed to serialize SSE chunk: {}", e);
+                                return None;
+                            }
+                        };
                         let event = Event::default().data(data);
                         Some((Ok(event), (rx, id, created, model_name, sent_role, finished)))
                     }
@@ -266,7 +279,13 @@ impl ChatCompletionHandler {
                             }],
                         };
 
-                        let data = serde_json::to_string(&chunk).ok()?;
+                        let data = match serde_json::to_string(&chunk) {
+                            Ok(s) => s,
+                            Err(e) => {
+                                tracing::error!("Failed to serialize final SSE chunk: {}", e);
+                                return None;
+                            }
+                        };
                         let event = Event::default().data(data);
                         Some((Ok(event), (rx, id, created, model_name, sent_role, finished)))
                     }

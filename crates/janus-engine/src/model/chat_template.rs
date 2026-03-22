@@ -100,14 +100,16 @@ impl ChatTemplateFormat {
     }
 
     /// Get the stop tokens for this template format
-    pub fn stop_tokens(&self) -> Vec<String> {
+    ///
+    /// Returns static string slices to avoid allocations
+    pub const fn stop_tokens(&self) -> &'static [&'static str] {
         match self {
-            Self::ChatML => vec!["<|im_end|>".to_string()],
-            Self::Llama3 => vec!["<|eot_id|>".to_string(), "<|end_of_text|>".to_string()],
-            Self::Llama2 => vec!["</s>".to_string()],
-            Self::Alpaca => vec!["###".to_string()],
-            Self::Vicuna => vec!["USER:".to_string()],
-            Self::Zephyr => vec!["</s>".to_string()],
+            Self::ChatML => &["<|im_end|>"],
+            Self::Llama3 => &["<|eot_id|>", "<|end_of_text|>"],
+            Self::Llama2 => &["</s>"],
+            Self::Alpaca => &["###"],
+            Self::Vicuna => &["USER:"],
+            Self::Zephyr => &["</s>"],
         }
     }
 }
@@ -149,12 +151,14 @@ impl ChatFormatter {
     }
 
     /// Get the stop tokens for this formatter
-    pub fn stop_tokens(&self) -> Vec<String> {
+    ///
+    /// Returns static string slices to avoid allocations
+    pub const fn stop_tokens(&self) -> &'static [&'static str] {
         self.format.stop_tokens()
     }
 
     /// Get the template format being used
-    pub fn format(&self) -> ChatTemplateFormat {
+    pub const fn format(&self) -> ChatTemplateFormat {
         self.format
     }
 
@@ -346,10 +350,10 @@ mod tests {
     fn test_stop_tokens() {
         let formatter = ChatFormatter::new(ChatTemplateFormat::ChatML);
         let stop_tokens = formatter.stop_tokens();
-        assert_eq!(stop_tokens, vec!["<|im_end|>"]);
+        assert_eq!(stop_tokens, &["<|im_end|>"]);
 
         let formatter = ChatFormatter::new(ChatTemplateFormat::Llama3);
         let stop_tokens = formatter.stop_tokens();
-        assert!(stop_tokens.contains(&"<|eot_id|>".to_string()));
+        assert!(stop_tokens.contains(&"<|eot_id|>"));
     }
 }
