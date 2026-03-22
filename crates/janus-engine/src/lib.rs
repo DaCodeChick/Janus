@@ -7,6 +7,13 @@
 //! - Token sampling and decoding
 //! - Plugin loading infrastructure
 
+// Enforce error handling best practices (per .opencode/AGENTS.md)
+#![warn(clippy::unwrap_used)]
+#![warn(clippy::expect_used)]
+#![warn(clippy::panic)]
+#![warn(clippy::todo)]
+#![warn(clippy::unimplemented)]
+
 pub mod compute;
 pub mod formats;
 pub mod loader;
