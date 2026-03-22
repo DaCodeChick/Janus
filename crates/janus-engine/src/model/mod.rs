@@ -3,17 +3,19 @@
 //! This module contains the building blocks for transformer-based language models:
 //! - `block`: Individual transformer block layers
 //! - `config`: Configuration parsing from HuggingFace config.json
-//! - `model`: Complete model with autoregressive generation
+//! - `transformer`: Complete transformer model with autoregressive generation
 //! - `output`: Language model head for vocabulary projection
 //! - `sampler`: Token sampling strategies
 //! - `tokenizer`: Text encoding and decoding
 
 pub mod block;
 pub mod config;
-pub mod model;
 pub mod output;
 pub mod sampler;
 pub mod tokenizer;
+
+#[path = "transformer/mod.rs"]
+pub mod model;
 
 pub use block::{TransformerBlock, TransformerBlockConfig};
 pub use config::{HuggingFaceConfig, ConfigError};
