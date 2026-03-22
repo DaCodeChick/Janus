@@ -206,7 +206,8 @@ impl TransformerBlock {
             scratch_input_norm,
             &self.attn_q_weight,
             scratch_q,
-            1,
+            self.config.batch_size,
+            self.config.hidden_dim,
             self.config.hidden_dim,
             self.config.hidden_dim,
         )?;
@@ -218,7 +219,8 @@ impl TransformerBlock {
             scratch_input_norm,
             &self.attn_k_weight,
             scratch_k,
-            1,
+            self.config.batch_size,
+            self.config.hidden_dim,
             self.config.hidden_dim,
             kv_dim,
         )?;
@@ -230,7 +232,8 @@ impl TransformerBlock {
             scratch_input_norm,
             &self.attn_v_weight,
             scratch_v,
-            1,
+            self.config.batch_size,
+            self.config.hidden_dim,
             self.config.hidden_dim,
             kv_dim,
         )?;
@@ -303,7 +306,8 @@ impl TransformerBlock {
             scratch_attn_out,
             &self.attn_output_weight,
             scratch_proj_out,
-            1,
+            self.config.batch_size,
+            self.config.hidden_dim,
             self.config.hidden_dim,
             self.config.hidden_dim,
         )?;
@@ -343,7 +347,8 @@ impl TransformerBlock {
             scratch_ffn_norm,
             &self.ffn_gate_weight,
             scratch_gate,
-            1,
+            self.config.batch_size,
+            self.config.hidden_dim,
             self.config.hidden_dim,
             self.config.ffn_dim,
         )?;
@@ -356,7 +361,8 @@ impl TransformerBlock {
             scratch_ffn_norm,
             &self.ffn_up_weight,
             scratch_up,
-            1,
+            self.config.batch_size,
+            self.config.hidden_dim,
             self.config.hidden_dim,
             self.config.ffn_dim,
         )?;
@@ -391,7 +397,8 @@ impl TransformerBlock {
             scratch_gate, // SwiGLU result
             &self.ffn_down_weight,
             scratch_ffn_out,
-            1,
+            self.config.batch_size,
+            self.config.ffn_dim,
             self.config.ffn_dim,
             self.config.hidden_dim,
         )?;

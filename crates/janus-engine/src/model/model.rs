@@ -921,7 +921,8 @@ impl Model {
             &self.scratch_ffn_norm,
             &self.lm_head_weight,
             &self.logits_buf,
-            1,
+            self.config.batch_size,
+            self.config.hidden_dim,
             self.config.hidden_dim,
             self.config.vocab_size,
         )?;

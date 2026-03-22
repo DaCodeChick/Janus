@@ -198,10 +198,10 @@ pub async fn matmul(
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 struct GemmUniforms {
+    batch_size: u32,
     m: u32,
     k: u32,
     n: u32,
-    _pad: u32,
 }
 
 /// Perform matrix-matrix multiplication (GEMM): C = A * B
@@ -210,10 +210,11 @@ struct GemmUniforms {
 /// * `engine` - The compute engine containing GPU device and queue
 /// * `encoder` - Shared command encoder for recording GPU operations
 /// * `pipeline_cache` - Pre-compiled pipeline cache
-/// * `matrix_a` - GPU buffer containing matrix A (M × K, row-major f32 data)
-/// * `matrix_b` - GPU buffer containing matrix B (K × N, row-major f32 data)
-/// * `output` - Pre-allocated output buffer for matrix C (M × N)
-/// * `m` - Number of rows in A
+/// * `matrix_a` - GPU buffer containing matrix A ([batch_size, M, K], row-major f32 data)
+/// * `matrix_b` - GPU buffer containing matrix B ([K, N], row-major packed f16 data, shared across batch)
+/// * `output` - Pre-allocated output buffer for matrix C ([batch_size, M, N])
+/// * `batch_size` - Number of sequences in the batch
+/// * `m` - Number of rows in A (per batch item)
 /// * `k` - Number of columns in A / rows in B
 /// * `n` - Number of columns in B
 ///
@@ -230,6 +231,7 @@ pub fn gemm(
     matrix_a: &wgpu::Buffer,
     matrix_b: &wgpu::Buffer,
     output: &wgpu::Buffer,
+    batch_size: u32,
     m: u32,
     k: u32,
     n: u32,
@@ -239,10 +241,10 @@ pub fn gemm(
 
     // Create uniforms buffer
     let uniforms = GemmUniforms {
+        batch_size,
         m,
         k,
         n,
-        _pad: 0,
     };
     let uniforms_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("gemm_uniforms"),
@@ -351,10 +353,11 @@ pub fn gemm(
         compute_pass.set_pipeline(&pipeline);
         compute_pass.set_bind_group(0, &bind_group, &[]);
 
-        // Calculate workgroup dispatch size (16x16 workgroups)
+        // Calculate workgroup dispatch size (16x16 workgroups per batch item)
         let workgroup_count_x = (n + 15) / 16;
         let workgroup_count_y = (m + 15) / 16;
-        compute_pass.dispatch_workgroups(workgroup_count_x, workgroup_count_y, 1);
+        let workgroup_count_z = batch_size;
+        compute_pass.dispatch_workgroups(workgroup_count_x, workgroup_count_y, workgroup_count_z);
     }
 
     Ok(())

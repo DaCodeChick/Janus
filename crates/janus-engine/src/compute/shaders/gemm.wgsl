@@ -1,10 +1,10 @@
 // General Matrix-Matrix Multiplication (GEMM): C = A * B
-// A: M x K matrix (dynamic activations, f32)
-// B: K x N matrix (static weights, packed f16)
-// C: M x N matrix (output, f32)
+// A: [batch_size, M, K] matrix (dynamic activations, f32)
+// B: [K, N] matrix (static weights, packed f16)
+// C: [batch_size, M, N] matrix (output, f32)
 //
-// Matrix A is f32 (dynamic hidden states).
-// Matrix B is packed f16 (2 f16s per u32) for 50% VRAM reduction.
+// Matrix A is f32 (dynamic hidden states) with batch dimension.
+// Matrix B is packed f16 (2 f16s per u32) for 50% VRAM reduction (shared across batch).
 // All computation happens in f32 precision (mixed-precision inference).
 // Optimized implementation using tiled matrix multiplication with shared memory.
 
@@ -12,15 +12,15 @@
 const TILE_SIZE: u32 = 16u;
 
 struct GemmUniforms {
-    M: u32,    // Rows of A
-    K: u32,    // Cols of A / Rows of B
-    N: u32,    // Cols of B
-    _pad: u32, // Padding for alignment
+    batch_size: u32, // Batch size
+    M: u32,          // Rows of A (per batch item)
+    K: u32,          // Cols of A / Rows of B
+    N: u32,          // Cols of B
 }
 
-@group(0) @binding(0) var<storage, read> matrix_a: array<f32>;      // Matrix A (M * K elements, row-major, f32)
+@group(0) @binding(0) var<storage, read> matrix_a: array<f32>;      // Matrix A (batch_size * M * K elements, row-major, f32)
 @group(0) @binding(1) var<storage, read> matrix_b: array<u32>;      // Matrix B (K * N / 2 elements, row-major, packed f16)
-@group(0) @binding(2) var<storage, read_write> matrix_c: array<f32>; // Output matrix C (M * N elements, row-major, f32)
+@group(0) @binding(2) var<storage, read_write> matrix_c: array<f32>; // Output matrix C (batch_size * M * N elements, row-major, f32)
 @group(0) @binding(3) var<uniform> uniforms: GemmUniforms;
 
 // Shared memory tiles for collaborative loading (L1 cache)
@@ -31,13 +31,17 @@ var<workgroup> tile_b: array<f32, 256>;  // Tile of matrix B
 // Tiled GEMM using shared memory for better memory bandwidth utilization
 // Each workgroup computes a TILE_SIZE x TILE_SIZE block of the output matrix
 // Workgroup size: 16x16 = 256 threads
+// Z dimension is used for batching
 @compute @workgroup_size(16, 16, 1)
 fn main(
     @builtin(global_invocation_id) global_id: vec3<u32>,
     @builtin(local_invocation_id) local_id: vec3<u32>,
     @builtin(workgroup_id) workgroup_id: vec3<u32>
 ) {
-    // Global output position
+    // Batch index from Z dimension
+    let batch_idx = workgroup_id.z;
+    
+    // Global output position within this batch
     let row = global_id.y;  // Global row in output matrix C
     let col = global_id.x;  // Global column in output matrix C
     
@@ -59,8 +63,11 @@ fn main(
         let a_row = workgroup_id.y * TILE_SIZE + local_row;
         let a_col = k_start + local_col;
         
+        // Calculate offset for this batch item in matrix A
+        let batch_offset_a = batch_idx * uniforms.M * uniforms.K;
+        
         if (a_row < uniforms.M && a_col < uniforms.K) {
-            tile_a[local_row * TILE_SIZE + local_col] = matrix_a[a_row * uniforms.K + a_col];
+            tile_a[local_row * TILE_SIZE + local_col] = matrix_a[batch_offset_a + a_row * uniforms.K + a_col];
         } else {
             tile_a[local_row * TILE_SIZE + local_col] = 0.0;
         }
@@ -69,6 +76,7 @@ fn main(
         // CRITICAL: PyTorch/HuggingFace stores weights as [out_features, in_features]
         // This means B is physically [N, K], so we must transpose on read
         // Additionally, B is packed f16 (2 f16s per u32), so we must unpack on read
+        // NOTE: Matrix B is SHARED across all batch items (no batch offset)
         let b_row = workgroup_id.x * TILE_SIZE + local_col;  // Note: using local_col for row
         let b_col = k_start + local_row;                      // Note: using local_row for col
         
@@ -105,6 +113,8 @@ fn main(
     
     // ===== WRITE OUTPUT: Store the accumulated result to global memory =====
     if (row < uniforms.M && col < uniforms.N) {
-        matrix_c[row * uniforms.N + col] = sum;
+        // Calculate offset for this batch item in output matrix C
+        let batch_offset_c = batch_idx * uniforms.M * uniforms.N;
+        matrix_c[batch_offset_c + row * uniforms.N + col] = sum;
     }
 }
