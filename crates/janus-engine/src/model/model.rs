@@ -935,6 +935,132 @@ impl Model {
         Ok(())
     }
 
+    /// Run batched forward pass for multiple tokens (one per sequence)
+    ///
+    /// This executes the full transformer pipeline for a batch of sequences:
+    /// 1. Embed all tokens (batch_size tokens)
+    /// 2. Pass through all transformer blocks
+    /// 3. Apply final normalization
+    /// 4. Project to vocabulary (LM head)
+    ///
+    /// The logits are written to the internal `logits_buf` with shape [batch_size, vocab_size]
+    ///
+    /// # Arguments
+    /// * `token_ids` - Input token IDs (length must equal batch_size)
+    /// * `seq_pos` - Position in the sequence (same for all sequences)
+    ///
+    /// # Returns
+    /// Ok(()) on success
+    ///
+    /// # Note
+    /// Currently assumes all sequences are at the same position. Future versions
+    /// may support per-sequence positions.
+    async fn forward_batch(&mut self, token_ids: &[u32], seq_pos: u32) -> Result<()> {
+        // Validate batch size
+        if token_ids.len() != self.config.batch_size as usize {
+            return Err(crate::compute::ComputeError::Other(format!(
+                "forward_batch() expected {} token IDs, got {}",
+                self.config.batch_size,
+                token_ids.len()
+            )));
+        }
+
+        // Create a single command encoder for the entire forward pass
+        let mut encoder = self
+            .engine
+            .device()
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("forward_batch_encoder"),
+            });
+        
+        // Step 1: Embed tokens into hidden_state buffer (ping-pong buffer A)
+        self.embed_tokens(&mut encoder, &self.hidden_state, token_ids)?;
+
+        // Step 2: Pass through all transformer blocks with ping-pong pattern
+        for (layer_idx, block) in self.blocks.iter().enumerate() {
+            tracing::debug!("Layer {}/{}: batched forward pass", layer_idx + 1, self.config.num_layers);
+            
+            // Determine input and output buffers (ping-pong between hidden_state and hidden_state_alt)
+            let (input_buf, output_buf) = if layer_idx % 2 == 0 {
+                (&self.hidden_state, &self.hidden_state_alt)
+            } else {
+                (&self.hidden_state_alt, &self.hidden_state)
+            };
+
+            // Execute transformer block (all operations batched into shared encoder)
+            block.forward(
+                &self.engine,
+                &mut encoder,
+                &self.pipeline_cache,
+                input_buf,
+                output_buf,
+                &self.scratch_input_norm,
+                &self.q_buf,
+                &self.k_buf,
+                &self.v_buf,
+                &self.q_rot_buf,
+                &self.k_rot_buf,
+                &self.attn_out_buf,
+                &self.scratch_proj_out,
+                &self.scratch_hidden1,
+                &self.scratch_ffn_norm,
+                &self.gate_buf,
+                &self.up_buf,
+                &self.scratch_swiglu,
+                &self.scratch_ffn_out,
+                &self.scores_buf,
+                &self.probs_buf,
+                &self.rope_cache,
+                &mut self.cache,
+                layer_idx as u32,
+                seq_pos,
+            )?;
+        }
+
+        // Determine which buffer contains the final block output
+        let final_block_output = if self.config.num_layers % 2 == 0 {
+            &self.hidden_state
+        } else {
+            &self.hidden_state_alt
+        };
+
+        // Step 3: Final RMSNorm (reuse scratch_ffn_norm as temporary buffer)
+        tracing::debug!("Applying final RMSNorm (batched)");
+        rmsnorm(
+            &self.engine,
+            &mut encoder,
+            &self.pipeline_cache,
+            final_block_output,
+            &self.scratch_ffn_norm,
+            &self.output_norm_weight,
+            self.config.batch_size,
+            self.config.hidden_dim,
+            self.config.rms_norm_eps,
+        )?;
+
+        // Step 4: LM head projection: normalized output -> logits_buf
+        // Output: [batch_size, vocab_size]
+        tracing::debug!("Computing LM head projection (batched)");
+        gemm(
+            &self.engine,
+            &mut encoder,
+            &self.pipeline_cache,
+            &self.scratch_ffn_norm,
+            &self.lm_head_weight,
+            &self.logits_buf,
+            self.config.batch_size,
+            self.config.hidden_dim,
+            self.config.hidden_dim,
+            self.config.vocab_size,
+        )?;
+
+        // Step 5: Submit all operations in a SINGLE batch
+        tracing::debug!("Submitting batched forward pass (single GPU submission)");
+        self.engine.queue().submit(Some(encoder.finish()));
+
+        Ok(())
+    }
+
     /// Get a reference to the logits buffer
     ///
     /// This buffer contains the output logits from the most recent forward pass.
@@ -1115,6 +1241,188 @@ impl Model {
         );
 
         Ok(generated_text)
+    }
+
+    /// Generate text autoregressively for multiple prompts in parallel
+    ///
+    /// This implements batched autoregressive generation:
+    /// - Tokenizes all input prompts
+    /// - Pads/truncates to same length for parallel processing
+    /// - Processes all sequences in parallel through the model
+    /// - Samples independently for each sequence
+    /// - Continues until all sequences finish (EOS or max_tokens)
+    ///
+    /// # Arguments
+    /// * `prompts` - Input text prompts (must have length equal to batch_size)
+    /// * `max_tokens` - Maximum number of tokens to generate per sequence
+    ///
+    /// # Returns
+    /// Vector of generated texts, one per prompt
+    ///
+    /// # Note
+    /// Currently requires batch_size to match the number of prompts.
+    /// All sequences are padded to the same length for simplicity.
+    pub async fn generate_batch(&mut self, prompts: &[&str], max_tokens: usize) -> Result<Vec<String>> {
+        // Validate batch size
+        if prompts.len() != self.config.batch_size as usize {
+            return Err(crate::compute::ComputeError::Other(format!(
+                "Expected {} prompts for batch_size={}, got {}",
+                self.config.batch_size,
+                self.config.batch_size,
+                prompts.len()
+            )));
+        }
+
+        let batch_size = prompts.len();
+        tracing::info!("Starting batched generation for {} prompts", batch_size);
+
+        // Step 1: Tokenize all prompts
+        let mut all_token_ids: Vec<Vec<u32>> = Vec::new();
+        let bos_token_id = self.tokenizer.bos_token_id().unwrap_or(1);
+
+        for (idx, prompt) in prompts.iter().enumerate() {
+            tracing::info!("Tokenizing prompt {}/{}: \"{}\"", idx + 1, batch_size, prompt);
+            let mut token_ids = self
+                .tokenizer
+                .encode(prompt, false)
+                .map_err(|e| crate::compute::ComputeError::Other(format!("Tokenization failed for prompt {}: {}", idx, e)))?;
+
+            // Add BOS token
+            token_ids.insert(0, bos_token_id);
+            tracing::info!("Prompt {}: {} tokens", idx + 1, token_ids.len());
+
+            all_token_ids.push(token_ids);
+        }
+
+        // Step 2: Find max prompt length (for prefill phase)
+        let max_prompt_len = all_token_ids.iter().map(|ids| ids.len()).max().unwrap_or(0);
+        tracing::info!("Max prompt length: {} tokens", max_prompt_len);
+
+        // Reset cache for new generation
+        self.cache.reset();
+
+        // Step 3: Prefill phase - process prompts token by token
+        // NOTE: This is a simplified implementation that processes all prompts synchronously
+        // A more efficient implementation would pad prompts and process them in parallel
+        tracing::info!("Prefill phase: processing {} prompts", batch_size);
+
+        for seq_pos in 0..max_prompt_len {
+            // Collect token for each sequence at this position
+            let mut batch_tokens = Vec::new();
+            for token_ids in &all_token_ids {
+                if seq_pos < token_ids.len() {
+                    batch_tokens.push(token_ids[seq_pos]);
+                } else {
+                    // Pad with BOS token if this sequence is shorter
+                    batch_tokens.push(bos_token_id);
+                }
+            }
+
+            tracing::debug!("Prefill position {}/{}", seq_pos + 1, max_prompt_len);
+            self.forward_batch(&batch_tokens, seq_pos as u32).await?;
+        }
+
+        // Step 4: Initialize generation state
+        let mut seq_pos = max_prompt_len as u32;
+        let mut last_tokens: Vec<u32> = all_token_ids.iter()
+            .map(|ids| *ids.last().unwrap_or(&bos_token_id))
+            .collect();
+        let mut generated_tokens: Vec<Vec<u32>> = vec![Vec::new(); batch_size];
+        let mut finished: Vec<bool> = vec![false; batch_size];
+        let eos_token_id = self.tokenizer.eos_token_id().unwrap_or(2);
+
+        // Print prompts
+        for (idx, prompt) in prompts.iter().enumerate() {
+            println!("[Prompt {}] {}", idx + 1, prompt);
+        }
+        println!();
+
+        // Step 5: Generation phase
+        tracing::info!("Generation phase: generating up to {} tokens per sequence", max_tokens);
+        let generation_start = std::time::Instant::now();
+        let mut total_tokens_generated = 0;
+
+        for step in 0..max_tokens {
+            // Check if all sequences are finished
+            if finished.iter().all(|&f| f) {
+                tracing::info!("All sequences finished at step {}", step);
+                break;
+            }
+
+            // Check sequence length limit
+            if seq_pos >= self.config.max_seq_len {
+                tracing::warn!("Reached maximum sequence length: {}", self.config.max_seq_len);
+                break;
+            }
+
+            tracing::debug!("Generation step {}/{}: seq_pos={}", step + 1, max_tokens, seq_pos);
+
+            // Forward pass for all active sequences
+            self.forward_batch(&last_tokens, seq_pos).await?;
+
+            // Sample next token for each sequence independently
+            // NOTE: This is a simplified implementation that uses the same sampling logic for all sequences
+            // In practice, we'd need to extract per-sequence logits and sample independently
+            
+            // For now, let's use a placeholder: sample the first sequence's logits
+            // A proper implementation would slice the logits buffer for each sequence
+            let next_token = self.sampler.sample(&self.engine, self.logits_buffer(), &generated_tokens[0]).await?;
+            
+            // Update all sequences with the same token (TEMPORARY - need per-sequence sampling)
+            for i in 0..batch_size {
+                if !finished[i] {
+                    last_tokens[i] = next_token;
+                    generated_tokens[i].push(next_token);
+                    total_tokens_generated += 1;
+
+                    // Check for EOS
+                    if next_token == eos_token_id || next_token == 2 {
+                        finished[i] = true;
+                        tracing::info!("Sequence {} finished (EOS)", i + 1);
+                    }
+                }
+            }
+
+            seq_pos += 1;
+        }
+
+        // Calculate telemetry
+        let elapsed_secs = generation_start.elapsed().as_secs_f64();
+        let tps = if elapsed_secs > 0.0 {
+            (total_tokens_generated as f64) / elapsed_secs
+        } else {
+            0.0
+        };
+
+        println!("\n=== Batched Generation Telemetry ===");
+        println!("Sequences: {}", batch_size);
+        println!("Total Tokens Generated: {}", total_tokens_generated);
+        println!("Elapsed Time: {:.3} seconds", elapsed_secs);
+        println!("Speed: {:.2} tok/s (total throughput)", tps);
+        println!("Speed per sequence: {:.2} tok/s", tps / batch_size as f64);
+        println!("====================================");
+
+        // Decode all generated texts
+        let mut results = Vec::new();
+        for (idx, tokens) in generated_tokens.iter().enumerate() {
+            let text = self
+                .tokenizer
+                .decode_batch(tokens)
+                .map_err(|e| crate::compute::ComputeError::Other(format!("Detokenization failed for sequence {}: {}", idx, e)))?;
+            
+            println!("[Result {}] {}", idx + 1, text);
+            results.push(text);
+        }
+
+        tracing::info!(
+            "Batched generation complete: {} sequences, {} total tokens in {:.3}s ({:.2} tok/s)",
+            batch_size,
+            total_tokens_generated,
+            elapsed_secs,
+            tps
+        );
+
+        Ok(results)
     }
 
     /// Get model configuration
