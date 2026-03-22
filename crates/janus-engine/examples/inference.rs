@@ -262,23 +262,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .clone();
 
     println!("   Found all required tensors");
-    
-    // Diagnostic: Show tensor sizes to help debug config mismatches
-    let expected_emb_size = (model_config.vocab_size * model_config.hidden_dim * 4) as u64;
-    let actual_emb_size = token_embedding_table.size();
-    
-    if actual_emb_size != expected_emb_size {
-        println!("\n!! WARNING: Embedding table size mismatch !!");
-        println!("   Expected: {} bytes ({} vocab × {} hidden × 4 bytes)", 
-                 expected_emb_size, model_config.vocab_size, model_config.hidden_dim);
-        println!("   Actual:   {} bytes", actual_emb_size);
-        println!("   This may indicate:");
-        println!("     - config.json doesn't match the model file");
-        println!("     - Model uses different vocab_size (actual might be {})", 
-                 actual_emb_size / (model_config.hidden_dim * 4) as u64);
-        println!("     - Model is quantized (not yet supported)");
-        println!("   Model initialization will likely fail...\n");
-    }
 
     // Create sampler
     let sampler = Sampler::greedy(model_config.vocab_size);

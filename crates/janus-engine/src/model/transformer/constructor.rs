@@ -76,38 +76,64 @@ impl Model {
         // === Validation: Tensor Buffer Sizes ===
         tracing::info!("Validating tensor buffer sizes...");
 
-        // Token embedding table: [vocab_size × hidden_dim] × 4 bytes (F32)
-        let expected_emb_size = (config.vocab_size * config.hidden_dim * 4) as u64;
-        if token_embedding_table.size() != expected_emb_size {
+        // Note: All tensors are stored as packed FP16 (2 bytes per element) on GPU
+        // to optimize VRAM usage. The engine converts F32/BF16 -> packed FP16 during allocation.
+
+        // Token embedding table: [vocab_size × hidden_dim] × 2 bytes (packed FP16)
+        let expected_emb_size_fp16 = (config.vocab_size * config.hidden_dim * 2) as u64;
+        let expected_emb_size_fp32 = (config.vocab_size * config.hidden_dim * 4) as u64;
+        let actual_emb_size = token_embedding_table.size();
+
+        if actual_emb_size != expected_emb_size_fp16 && actual_emb_size != expected_emb_size_fp32 {
             return Err(crate::compute::ComputeError::InvalidDimensions(format!(
-                "Token embedding table size mismatch\nExpected: {} bytes ({} vocab × {} hidden × 4 bytes)\nActual: {} bytes\n\nSuggestions:\n  - Verify the config.json matches this model\n  - Check if vocab_size or hidden_size are incorrect\n  - The tensor may be quantized (not yet supported)",
-                expected_emb_size,
+                "Token embedding table size mismatch\nExpected: {} bytes (packed FP16: {} vocab × {} hidden × 2 bytes)\n       or {} bytes (F32: {} vocab × {} hidden × 4 bytes)\nActual: {} bytes\n\nSuggestions:\n  - Verify the config.json matches this model\n  - Check if vocab_size or hidden_size are incorrect\n  - Actual vocab_size might be {} (if FP16) or {} (if F32)",
+                expected_emb_size_fp16,
                 config.vocab_size,
                 config.hidden_dim,
-                token_embedding_table.size()
+                expected_emb_size_fp32,
+                config.vocab_size,
+                config.hidden_dim,
+                actual_emb_size,
+                actual_emb_size / (config.hidden_dim * 2) as u64,
+                actual_emb_size / (config.hidden_dim * 4) as u64,
             )));
         }
 
-        // Output norm weight: [hidden_dim] × 4 bytes (F32)
-        let expected_norm_size = (config.hidden_dim * 4) as u64;
-        if output_norm_weight.size() != expected_norm_size {
+        // Output norm weight: [hidden_dim] × 2 bytes (packed FP16)
+        let expected_norm_size_fp16 = (config.hidden_dim * 2) as u64;
+        let expected_norm_size_fp32 = (config.hidden_dim * 4) as u64;
+        let actual_norm_size = output_norm_weight.size();
+
+        if actual_norm_size != expected_norm_size_fp16
+            && actual_norm_size != expected_norm_size_fp32
+        {
             return Err(crate::compute::ComputeError::InvalidDimensions(format!(
-                "Output norm weight size mismatch\nExpected: {} bytes ({} hidden × 4 bytes)\nActual: {} bytes\n\nSuggestions:\n  - Verify the config.json hidden_size is correct\n  - Check if the model uses a different norm implementation",
-                expected_norm_size,
+                "Output norm weight size mismatch\nExpected: {} bytes (packed FP16: {} hidden × 2 bytes)\n       or {} bytes (F32: {} hidden × 4 bytes)\nActual: {} bytes\n\nSuggestions:\n  - Verify the config.json hidden_size is correct\n  - Check if the model uses a different norm implementation",
+                expected_norm_size_fp16,
                 config.hidden_dim,
-                output_norm_weight.size()
+                expected_norm_size_fp32,
+                config.hidden_dim,
+                actual_norm_size
             )));
         }
 
-        // LM head weight: [hidden_dim × vocab_size] × 4 bytes (F32)
-        let expected_lm_head_size = (config.hidden_dim * config.vocab_size * 4) as u64;
-        if lm_head_weight.size() != expected_lm_head_size {
+        // LM head weight: [hidden_dim × vocab_size] × 2 bytes (packed FP16)
+        let expected_lm_head_size_fp16 = (config.hidden_dim * config.vocab_size * 2) as u64;
+        let expected_lm_head_size_fp32 = (config.hidden_dim * config.vocab_size * 4) as u64;
+        let actual_lm_head_size = lm_head_weight.size();
+
+        if actual_lm_head_size != expected_lm_head_size_fp16
+            && actual_lm_head_size != expected_lm_head_size_fp32
+        {
             return Err(crate::compute::ComputeError::InvalidDimensions(format!(
-                "LM head weight size mismatch\nExpected: {} bytes ({} hidden × {} vocab × 4 bytes)\nActual: {} bytes\n\nSuggestions:\n  - Verify config.json vocab_size and hidden_size are correct\n  - Some models share embeddings with LM head (weight tying)\n  - The tensor may be quantized (not yet supported)",
-                expected_lm_head_size,
+                "LM head weight size mismatch\nExpected: {} bytes (packed FP16: {} hidden × {} vocab × 2 bytes)\n       or {} bytes (F32: {} hidden × {} vocab × 4 bytes)\nActual: {} bytes\n\nSuggestions:\n  - Verify config.json vocab_size and hidden_size are correct\n  - Some models share embeddings with LM head (weight tying)",
+                expected_lm_head_size_fp16,
                 config.hidden_dim,
                 config.vocab_size,
-                lm_head_weight.size()
+                expected_lm_head_size_fp32,
+                config.hidden_dim,
+                config.vocab_size,
+                actual_lm_head_size
             )));
         }
 
