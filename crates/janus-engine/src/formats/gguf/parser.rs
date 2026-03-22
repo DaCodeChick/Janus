@@ -55,7 +55,7 @@ impl GGUFParser {
     }
 
     /// Get the data offset where tensor data starts
-    pub fn data_offset(&self) -> usize {
+    pub const fn data_offset(&self) -> usize {
         self.data_offset
     }
 

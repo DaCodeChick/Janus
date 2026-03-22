@@ -455,7 +455,7 @@ impl Sampler {
     }
     
     /// Check if beam search is enabled
-    pub fn is_beam_search_enabled(&self) -> bool {
+    pub const fn is_beam_search_enabled(&self) -> bool {
         self.config.beam_width > 1
     }
 }

@@ -225,14 +225,18 @@ impl HuggingFaceConfig {
     ///
     /// Returns num_key_value_heads if specified, otherwise falls back
     /// to num_attention_heads (standard multi-head attention)
-    pub fn num_kv_heads(&self) -> u32 {
-        self.num_key_value_heads.unwrap_or(self.num_attention_heads)
+    pub const fn num_kv_heads(&self) -> u32 {
+        if let Some(kv_heads) = self.num_key_value_heads {
+            kv_heads
+        } else {
+            self.num_attention_heads
+        }
     }
 
     /// Get the head dimension
     ///
     /// Computed as hidden_size / num_attention_heads
-    pub fn head_dim(&self) -> u32 {
+    pub const fn head_dim(&self) -> u32 {
         self.hidden_size / self.num_attention_heads
     }
 
@@ -240,15 +244,23 @@ impl HuggingFaceConfig {
     ///
     /// Returns intermediate_size if specified, otherwise computes
     /// the standard 4 * hidden_size (typical for transformers)
-    pub fn ffn_dim(&self) -> u32 {
-        self.intermediate_size.unwrap_or(4 * self.hidden_size)
+    pub const fn ffn_dim(&self) -> u32 {
+        if let Some(intermediate) = self.intermediate_size {
+            intermediate
+        } else {
+            4 * self.hidden_size
+        }
     }
 
     /// Get the maximum sequence length
     ///
     /// Returns max_seq_length if specified, otherwise defaults to 2048
-    pub fn max_seq_len(&self) -> u32 {
-        self.max_seq_length.unwrap_or(2048)
+    pub const fn max_seq_len(&self) -> u32 {
+        if let Some(max_len) = self.max_seq_length {
+            max_len
+        } else {
+            2048
+        }
     }
 }
 

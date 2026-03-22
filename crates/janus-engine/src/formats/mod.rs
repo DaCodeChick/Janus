@@ -150,7 +150,7 @@ pub enum TensorDType {
 
 impl TensorDType {
     /// Get the size in bytes of a single element of this data type
-    pub fn element_size(&self) -> usize {
+    pub const fn element_size(&self) -> usize {
         match self {
             TensorDType::F32 | TensorDType::I32 | TensorDType::U32 => 4,
             TensorDType::F16 | TensorDType::BF16 | TensorDType::I16 | TensorDType::U16 => 2,

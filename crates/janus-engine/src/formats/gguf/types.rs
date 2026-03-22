@@ -77,7 +77,7 @@ impl TryFrom<u32> for GGMLType {
 
 impl GGMLType {
     /// Get the size in bytes for a single element of this type
-    pub fn element_size(&self) -> usize {
+    pub const fn element_size(&self) -> usize {
         match self {
             Self::F32 | Self::I32 => 4,
             Self::F16 | Self::I16 => 2,
