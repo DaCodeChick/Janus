@@ -16,6 +16,7 @@ use wgpu::util::DeviceExt;
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 struct AttentionUniforms {
+    batch_size: u32,
     seq_len: u32,
     num_heads: u32,
     num_kv_heads: u32,
@@ -23,7 +24,8 @@ struct AttentionUniforms {
     scale: f32,
     layer_idx: u32,
     max_seq_len: u32,
-    _pad: u32,
+    num_layers: u32,
+    _pad: [u32; 3], // Padding for alignment (12 u32s total = 48 bytes)
 }
 
 /// Uniforms structure for Softmax operation
@@ -37,33 +39,36 @@ struct SoftmaxUniforms {
     _pad: u32,
 }
 
-/// Compute scaled dot-product attention with Grouped Query Attention (GQA) support
+/// Compute scaled dot-product attention with Grouped Query Attention (GQA) support - Batched
 ///
 /// Attention(Q, K, V) = softmax(Q * K^T / sqrt(d)) * V
 ///
-/// This function implements multi-head attention with GQA by:
+/// This function implements batched multi-head attention with GQA by:
 /// 1. Computing attention scores (Q * K^T) scaled by 1/sqrt(head_dim)
 /// 2. Applying softmax to get attention probabilities
 /// 3. Multiplying probabilities by values to get output
 ///
 /// For GQA, each KV head is shared across multiple query heads (num_heads / num_kv_heads).
+/// Each sequence in the batch attends only to its own history (no cross-sequence attention).
 ///
 /// # Arguments
 /// * `engine` - The compute engine providing GPU access
 /// * `encoder` - Shared command encoder for batching operations
 /// * `pipeline_cache` - Pre-compiled shader cache
-/// * `query` - Query tensor [num_heads, head_dim]
-/// * `key_cache` - Segmented key cache [num_layers, max_seq_len, num_kv_heads, head_dim]
-/// * `value_cache` - Segmented value cache [num_layers, max_seq_len, num_kv_heads, head_dim]
-/// * `output` - Output tensor [num_heads, head_dim]
-/// * `scores` - Pre-allocated buffer for attention scores [num_heads * max_seq_len]
-/// * `probs` - Pre-allocated buffer for attention probabilities [num_heads * max_seq_len]
+/// * `query` - Query tensor [batch_size, num_heads, head_dim]
+/// * `key_cache` - Batched key cache [batch_size, num_layers, max_seq_len, num_kv_heads, head_dim]
+/// * `value_cache` - Batched value cache [batch_size, num_layers, max_seq_len, num_kv_heads, head_dim]
+/// * `output` - Output tensor [batch_size, num_heads, head_dim]
+/// * `scores` - Pre-allocated buffer for attention scores [batch_size, num_heads, max_seq_len]
+/// * `probs` - Pre-allocated buffer for attention probabilities [batch_size, num_heads, max_seq_len]
+/// * `batch_size` - Number of sequences being processed in parallel
 /// * `layer_idx` - Layer index for cache segmentation
 /// * `seq_len` - Current sequence length (number of tokens processed so far, including current)
 /// * `max_seq_len` - Maximum sequence length for cache sizing
 /// * `num_heads` - Number of query heads
 /// * `num_kv_heads` - Number of key/value heads (GQA support)
 /// * `head_dim` - Dimension of each attention head
+/// * `num_layers` - Total number of transformer layers (for KV cache indexing)
 ///
 /// # Shaders
 /// Uses `shaders/attention.wgsl` and `shaders/softmax.wgsl` for compute operations.
@@ -77,12 +82,14 @@ pub fn compute_attention(
     output: &wgpu::Buffer,
     scores: &wgpu::Buffer,
     probs: &wgpu::Buffer,
+    batch_size: u32,
     layer_idx: u32,
     seq_len: u32,
     max_seq_len: u32,
     num_heads: u32,
     num_kv_heads: u32,
     head_dim: u32,
+    num_layers: u32,
 ) -> Result<()> {
     let device = engine.device();
     let scale = 1.0 / (head_dim as f32).sqrt();
@@ -93,6 +100,7 @@ pub fn compute_attention(
 
     // Create uniforms
     let attention_uniforms = AttentionUniforms {
+        batch_size,
         seq_len,
         num_heads,
         num_kv_heads,
@@ -100,7 +108,8 @@ pub fn compute_attention(
         scale,
         layer_idx,
         max_seq_len,
-        _pad: 0,
+        num_layers,
+        _pad: [0; 3],
     };
     let attention_uniforms_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("attention_uniforms"),
@@ -110,7 +119,7 @@ pub fn compute_attention(
     let softmax_uniforms = SoftmaxUniforms {
         seq_len,
         num_heads,
-        batch_size: num_heads,
+        batch_size: batch_size * num_heads, // Total number of softmax operations
         _pad: 0,
     };
     let softmax_uniforms_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -362,7 +371,8 @@ pub fn compute_attention(
         });
         compute_pass.set_pipeline(&qk_pipeline);
         compute_pass.set_bind_group(0, &qk_bind_group, &[]);
-        compute_pass.dispatch_workgroups(num_heads, 1, 1);
+        // Dispatch batch_size * num_heads workgroups (one per batch item per head)
+        compute_pass.dispatch_workgroups(batch_size * num_heads, 1, 1);
     }
     {
         let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
@@ -371,7 +381,8 @@ pub fn compute_attention(
         });
         compute_pass.set_pipeline(&softmax_pipeline);
         compute_pass.set_bind_group(0, &softmax_bind_group, &[]);
-        compute_pass.dispatch_workgroups(num_heads, 1, 1);
+        // Dispatch batch_size * num_heads workgroups (one softmax per batch item per head)
+        compute_pass.dispatch_workgroups(batch_size * num_heads, 1, 1);
     }
     {
         let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
@@ -380,7 +391,9 @@ pub fn compute_attention(
         });
         compute_pass.set_pipeline(&apply_pipeline);
         compute_pass.set_bind_group(0, &apply_bind_group, &[]);
-        let workgroup_count = (num_heads * head_dim + 255) / 256;
+        // Total elements: batch_size * num_heads * head_dim
+        let total_elements = batch_size * num_heads * head_dim;
+        let workgroup_count = (total_elements + 255) / 256;
         compute_pass.dispatch_workgroups(workgroup_count, 1, 1);
     }
 

@@ -17,6 +17,8 @@ use crate::compute::{ComputeEngine, Result};
 /// Configuration for a transformer block
 #[derive(Debug, Clone)]
 pub struct TransformerBlockConfig {
+    /// Batch size for parallel sequence processing
+    pub batch_size: u32,
     /// Model hidden dimension (e.g., 4096 for LLaMA-7B)
     pub hidden_dim: u32,
     /// Number of attention heads (e.g., 32 for LLaMA-7B)
@@ -283,12 +285,14 @@ impl TransformerBlock {
             scratch_attn_out,
             scores_buf,
             probs_buf,
+            self.config.batch_size,
             layer_idx,
             current_seq_len,
             cache.max_seq_len(),
             self.config.num_heads,
             self.config.num_kv_heads,
             self.config.head_dim,
+            cache.num_layers(),
         )?;
 
         // Step 6: Output projection

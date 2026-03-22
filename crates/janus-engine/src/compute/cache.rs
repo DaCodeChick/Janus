@@ -186,21 +186,25 @@ impl KVCache {
         #[repr(C)]
         #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
         struct UpdateCacheUniforms {
+            batch_size: u32,
             cache_position: u32,
             token_dim: u32,
             num_heads: u32,
             layer_idx: u32,
             max_seq_len: u32,
-            _pad: [u32; 7], // Pad to 48 bytes (12 u32s total)
+            num_layers: u32,
+            _pad: u32, // Pad to 32 bytes (8 u32s total)
         }
 
         let uniforms = UpdateCacheUniforms {
+            batch_size: self.batch_size,
             cache_position: position,
             token_dim: self.head_dim,
             num_heads: self.num_kv_heads,
             layer_idx,
             max_seq_len: self.max_seq_len,
-            _pad: [0; 7],
+            num_layers: self.num_layers,
+            _pad: 0,
         };
 
         let uniforms_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -296,7 +300,8 @@ impl KVCache {
             compute_pass.set_bind_group(0, &bind_group, &[]);
 
             // Calculate workgroup count (256 threads per workgroup)
-            let total_elements = self.num_kv_heads * self.head_dim;
+            // Total elements: batch_size * num_kv_heads * head_dim
+            let total_elements = self.batch_size * self.num_kv_heads * self.head_dim;
             let workgroup_count = (total_elements + 255) / 256;
             compute_pass.dispatch_workgroups(workgroup_count, 1, 1);
         }
