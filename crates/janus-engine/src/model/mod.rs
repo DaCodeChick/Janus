@@ -8,8 +8,10 @@
 //! - `sampler`: Token sampling strategies
 //! - `tokenizer`: Text encoding and decoding
 //! - `speculative`: Speculative decoding for accelerated inference
+//! - `chat_template`: Chat template formatting for conversational models
 
 pub mod block;
+pub mod chat_template;
 pub mod config;
 pub mod output;
 pub mod sampler;
@@ -20,6 +22,7 @@ pub mod speculative;
 pub mod model;
 
 pub use block::{TransformerBlock, TransformerBlockConfig};
+pub use chat_template::{ChatFormatter, ChatMessage, ChatRole, ChatTemplateFormat};
 pub use config::{HuggingFaceConfig, ConfigError};
 pub use model::{Model, ModelConfig};
 pub use output::{LMHead, LMHeadConfig};

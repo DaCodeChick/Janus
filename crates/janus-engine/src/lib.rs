@@ -26,6 +26,7 @@ pub use formats::{
     FormatError, ModelLoader, TensorData, TensorDType,
 };
 pub use model::{
+    ChatFormatter, ChatMessage, ChatRole, ChatTemplateFormat,
     LMHead, LMHeadConfig, Model, ModelConfig, Sampler, SamplerConfig, Tokenizer,
     TokenizerError, TransformerBlock, TransformerBlockConfig, HuggingFaceConfig,
     ConfigError,

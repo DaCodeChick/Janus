@@ -199,6 +199,179 @@ impl Model {
         Ok(generated_text)
     }
 
+    /// Generate text with streaming callback and stop string support
+    ///
+    /// This is an enhanced version of `generate` that supports:
+    /// - Real-time streaming via callback function
+    /// - Stop strings (e.g., `<|im_end|>`, `</s>`)
+    /// - Custom stop token IDs
+    ///
+    /// # Arguments
+    /// * `prompt` - Input text prompt
+    /// * `max_tokens` - Maximum number of tokens to generate
+    /// * `stop_strings` - Optional list of strings that stop generation when encountered
+    /// * `callback` - Optional callback function called with each generated token
+    ///
+    /// # Returns
+    /// The complete generated text (prompt + generated tokens)
+    pub async fn generate_with_callback<F>(
+        &mut self,
+        prompt: &str,
+        max_tokens: usize,
+        stop_strings: Option<&[String]>,
+        mut callback: Option<F>,
+    ) -> Result<String>
+    where
+        F: FnMut(&str) -> bool + Send, // Returns false to stop generation early
+    {
+        // Tokenize the prompt
+        tracing::info!("Tokenizing prompt: \"{}\"", prompt);
+        let mut token_ids = self
+            .tokenizer
+            .encode(prompt, false)
+            .map_err(|e| crate::compute::ComputeError::Other(format!("Tokenization failed: {}", e)))?;
+
+        // Add BOS token
+        let bos_token_id = self.tokenizer.bos_token_id().unwrap_or(1);
+        token_ids.insert(0, bos_token_id);
+        tracing::info!("Prepended BOS token (ID: {}) to prompt", bos_token_id);
+
+        if token_ids.is_empty() {
+            return Err(crate::compute::ComputeError::Other(
+                "Empty prompt after tokenization".into(),
+            ));
+        }
+
+        tracing::info!("Prompt tokens: {} tokens", token_ids.len());
+
+        // Reset cache for new generation
+        self.cache.reset();
+
+        // Process prompt tokens (prefill phase)
+        let mut seq_pos = 0u32;
+        tracing::info!("Prefill phase: processing {} prompt tokens", token_ids.len());
+        
+        for (idx, &token_id) in token_ids.iter().enumerate() {
+            tracing::debug!("Prefill token {}/{}: ID={}", idx + 1, token_ids.len(), token_id);
+            self.forward(token_id, seq_pos).await?;
+            seq_pos += 1;
+        }
+
+        // Get the last token for autoregressive generation
+        let mut last_token = match token_ids.last() {
+            Some(&token) => token,
+            None => {
+                return Err(crate::compute::ComputeError::Other(
+                    "Empty token sequence after validation".into(),
+                ));
+            }
+        };
+
+        // Start generation (decode phase)
+        tracing::info!("Generation phase: generating up to {} tokens", max_tokens);
+        let mut generated_tokens = Vec::new();
+        let mut printed_len = 0;
+
+        // High-precision benchmark timing
+        let generation_start = std::time::Instant::now();
+        let mut tokens_generated = 0u32;
+
+        for step in 0..max_tokens {
+            // Check sequence length limit
+            if seq_pos >= self.config.max_seq_len {
+                tracing::warn!("Reached maximum sequence length: {}", self.config.max_seq_len);
+                break;
+            }
+
+            tracing::debug!("Generation step {}/{}: seq_pos={}", step + 1, max_tokens, seq_pos);
+
+            // Forward pass
+            self.forward(last_token, seq_pos).await?;
+
+            // Sample next token
+            let next_token = self.sampler.sample(&self.engine, self.logits_buffer(), &generated_tokens).await?;
+            
+            tracing::debug!("Sampled token ID: {}", next_token);
+            tokens_generated += 1;
+
+            // Check for EOS token
+            if next_token == 2 {
+                tracing::info!("Generated EOS token (ID: 2), stopping generation");
+                break;
+            }
+            
+            if let Some(eos_id) = self.tokenizer.eos_token_id() {
+                if next_token == eos_id {
+                    tracing::info!("Generated EOS token (ID: {}), stopping generation", eos_id);
+                    break;
+                }
+            }
+
+            // Add token to generated sequence
+            generated_tokens.push(next_token);
+
+            // Decode entire sequence to get the latest text
+            let full_text = self
+                .tokenizer
+                .decode_batch(&generated_tokens)
+                .map_err(|e| crate::compute::ComputeError::Other(format!("Detokenization failed: {}", e)))?;
+
+            // Check for stop strings in the generated text
+            if let Some(stop_strs) = stop_strings {
+                let mut should_stop = false;
+                for stop_str in stop_strs {
+                    if full_text.contains(stop_str) {
+                        tracing::info!("Stop string '{}' detected, stopping generation", stop_str);
+                        should_stop = true;
+                        break;
+                    }
+                }
+                if should_stop {
+                    break;
+                }
+            }
+
+            // Stream only the newly generated text via callback
+            if full_text.len() > printed_len {
+                let new_text = &full_text[printed_len..];
+                if let Some(ref mut cb) = callback {
+                    if !cb(new_text) {
+                        tracing::info!("Callback requested stop");
+                        break;
+                    }
+                }
+                printed_len = full_text.len();
+            }
+
+            // Update for next iteration
+            last_token = next_token;
+            seq_pos += 1;
+        }
+
+        // Decode final text from all generated tokens
+        let generated_text = self
+            .tokenizer
+            .decode_batch(&generated_tokens)
+            .map_err(|e| crate::compute::ComputeError::Other(format!("Final detokenization failed: {}", e)))?;
+
+        // Calculate telemetry
+        let elapsed_secs = generation_start.elapsed().as_secs_f64();
+        let tps = if elapsed_secs > 0.0 {
+            (tokens_generated as f64) / elapsed_secs
+        } else {
+            0.0
+        };
+
+        tracing::info!(
+            "Generation complete: {} tokens generated in {:.3}s ({:.2} tok/s)",
+            generated_tokens.len(),
+            elapsed_secs,
+            tps
+        );
+
+        Ok(generated_text)
+    }
+
     /// Generate text autoregressively for multiple prompts in parallel using sampler's max_tokens
     ///
     /// This is a convenience method that uses the `max_tokens` value from the
