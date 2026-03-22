@@ -1,0 +1,19 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "permission": {
+    "read": {
+      "target/*": "deny",
+      "*/target/*": "deny",
+    },
+    "edit": {
+      "target/*": "deny",
+      "*/target/*": "deny",
+      "Cargo.lock": "deny",
+      "*/Cargo.lock": "deny"
+    },
+    "list": {
+      "target/*": "deny",
+      "*/target/*": "deny"
+    }
+  }
+}
