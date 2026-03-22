@@ -14,14 +14,19 @@ use wgpu::util::DeviceExt;
 /// token and all previous tokens. Instead of recomputing the Key and Value projections
 /// for all previous tokens at each step, we cache them in GPU memory.
 ///
-/// Layout: [num_layers][max_seq_len][num_kv_heads][head_dim]
+/// Layout: [batch_size][num_layers][max_seq_len][num_kv_heads][head_dim]
 /// Note: For GQA (Grouped Query Attention), num_kv_heads < num_query_heads
+///
+/// For batched inference, each sequence in the batch has its own independent cache.
 pub struct KVCache {
     /// GPU buffer for cached Keys
     key_cache: wgpu::Buffer,
 
     /// GPU buffer for cached Values
     value_cache: wgpu::Buffer,
+
+    /// Batch size (number of parallel sequences)
+    batch_size: u32,
 
     /// Number of transformer layers
     num_layers: u32,
@@ -44,6 +49,7 @@ impl KVCache {
     ///
     /// # Arguments
     /// * `engine` - The compute engine for GPU operations
+    /// * `batch_size` - Number of parallel sequences to support
     /// * `num_layers` - Number of transformer layers
     /// * `max_seq_len` - Maximum sequence length to support (e.g., 2048, 4096)
     /// * `num_kv_heads` - Number of KV attention heads (for GQA)
@@ -53,6 +59,7 @@ impl KVCache {
     /// A new KVCache instance with pre-allocated GPU buffers
     pub fn new(
         engine: &ComputeEngine,
+        batch_size: u32,
         num_layers: u32,
         max_seq_len: u32,
         num_kv_heads: u32,
@@ -60,12 +67,13 @@ impl KVCache {
     ) -> Result<Self> {
         let device = engine.device();
 
-        // Calculate total size in bytes (multiply by num_layers to segment by layer)
-        let cache_size = (num_layers * max_seq_len * num_kv_heads * head_dim) as u64
+        // Calculate total size in bytes (includes batch dimension)
+        let cache_size = (batch_size * num_layers * max_seq_len * num_kv_heads * head_dim) as u64
             * std::mem::size_of::<f32>() as u64;
 
         tracing::info!(
-            "Allocating KV cache: num_layers={}, max_seq_len={}, num_kv_heads={}, head_dim={}, total_size={:.2} MB",
+            "Allocating KV cache: batch_size={}, num_layers={}, max_seq_len={}, num_kv_heads={}, head_dim={}, total_size={:.2} MB",
+            batch_size,
             num_layers,
             max_seq_len,
             num_kv_heads,
@@ -96,6 +104,7 @@ impl KVCache {
         Ok(Self {
             key_cache,
             value_cache,
+            batch_size,
             num_layers,
             max_seq_len,
             num_kv_heads,

@@ -87,6 +87,16 @@ pub struct ModelConfig {
     pub max_seq_len: u32,
     /// RMSNorm epsilon
     pub rms_norm_eps: f32,
+    /// Batch size for parallel sequence processing (default: 1)
+    /// 
+    /// Number of sequences to process in parallel. Higher batch sizes improve
+    /// throughput at the cost of increased VRAM usage.
+    /// 
+    /// Recommended values:
+    /// - 1: Single-sequence inference (lowest latency, lowest VRAM)
+    /// - 4-8: Good balance for multi-user serving
+    /// - 16+: Maximum throughput (requires significant VRAM)
+    pub batch_size: u32,
 }
 
 /// Complete transformer model for text generation
@@ -303,9 +313,10 @@ impl Model {
         
         tracing::info!("✓ All validations passed");
 
-        // Create KV cache (uses num_kv_heads for GQA support, segmented by layer)
+        // Create KV cache (uses num_kv_heads for GQA support, segmented by layer and batch)
         let cache = KVCache::new(
             &engine,
+            config.batch_size,
             config.num_layers,
             config.max_seq_len,
             config.num_kv_heads,
@@ -318,145 +329,145 @@ impl Model {
             | wgpu::BufferUsages::COPY_SRC 
             | wgpu::BufferUsages::COPY_DST;
 
-        tracing::info!("Allocating static computation graph scratch buffers...");
+        tracing::info!("Allocating static computation graph scratch buffers (batch_size={})...", config.batch_size);
 
-        // Ping-pong hidden state buffers [hidden_dim]
+        // Ping-pong hidden state buffers [batch_size, hidden_dim]
         let hidden_state = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("hidden_state"),
-            size: (config.hidden_dim * std::mem::size_of::<f32>() as u32) as u64,
+            size: (config.batch_size * config.hidden_dim * std::mem::size_of::<f32>() as u32) as u64,
             usage: buffer_usage,
             mapped_at_creation: false,
         });
 
         let hidden_state_alt = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("hidden_state_alt"),
-            size: (config.hidden_dim * std::mem::size_of::<f32>() as u32) as u64,
+            size: (config.batch_size * config.hidden_dim * std::mem::size_of::<f32>() as u32) as u64,
             usage: buffer_usage,
             mapped_at_creation: false,
         });
 
-        // Attention projection buffers
+        // Attention projection buffers [batch_size, num_heads/kv_heads, head_dim]
         let q_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("q_buf"),
-            size: (config.num_heads * config.head_dim * std::mem::size_of::<f32>() as u32) as u64,
+            size: (config.batch_size * config.num_heads * config.head_dim * std::mem::size_of::<f32>() as u32) as u64,
             usage: buffer_usage,
             mapped_at_creation: false,
         });
 
         let k_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("k_buf"),
-            size: (config.num_kv_heads * config.head_dim * std::mem::size_of::<f32>() as u32) as u64,
+            size: (config.batch_size * config.num_kv_heads * config.head_dim * std::mem::size_of::<f32>() as u32) as u64,
             usage: buffer_usage,
             mapped_at_creation: false,
         });
 
         let v_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("v_buf"),
-            size: (config.num_kv_heads * config.head_dim * std::mem::size_of::<f32>() as u32) as u64,
+            size: (config.batch_size * config.num_kv_heads * config.head_dim * std::mem::size_of::<f32>() as u32) as u64,
             usage: buffer_usage,
             mapped_at_creation: false,
         });
 
-        // Rotated Q and K buffers (after RoPE)
+        // Rotated Q and K buffers (after RoPE) [batch_size, num_heads/kv_heads, head_dim]
         let q_rot_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("q_rot_buf"),
-            size: (config.num_heads * config.head_dim * std::mem::size_of::<f32>() as u32) as u64,
+            size: (config.batch_size * config.num_heads * config.head_dim * std::mem::size_of::<f32>() as u32) as u64,
             usage: buffer_usage,
             mapped_at_creation: false,
         });
 
         let k_rot_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("k_rot_buf"),
-            size: (config.num_kv_heads * config.head_dim * std::mem::size_of::<f32>() as u32) as u64,
+            size: (config.batch_size * config.num_kv_heads * config.head_dim * std::mem::size_of::<f32>() as u32) as u64,
             usage: buffer_usage,
             mapped_at_creation: false,
         });
 
         let attn_out_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("attn_out_buf"),
-            size: (config.num_heads * config.head_dim * std::mem::size_of::<f32>() as u32) as u64,
+            size: (config.batch_size * config.num_heads * config.head_dim * std::mem::size_of::<f32>() as u32) as u64,
             usage: buffer_usage,
             mapped_at_creation: false,
         });
 
-        // FFN projection buffers [ffn_dim]
+        // FFN projection buffers [batch_size, ffn_dim]
         let gate_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("gate_buf"),
-            size: (config.ffn_dim * std::mem::size_of::<f32>() as u32) as u64,
+            size: (config.batch_size * config.ffn_dim * std::mem::size_of::<f32>() as u32) as u64,
             usage: buffer_usage,
             mapped_at_creation: false,
         });
 
         let up_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("up_buf"),
-            size: (config.ffn_dim * std::mem::size_of::<f32>() as u32) as u64,
+            size: (config.batch_size * config.ffn_dim * std::mem::size_of::<f32>() as u32) as u64,
             usage: buffer_usage,
             mapped_at_creation: false,
         });
 
-        // Logits output buffer [vocab_size]
+        // Logits output buffer [batch_size, vocab_size]
         let logits_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("logits_buf"),
-            size: (config.vocab_size * std::mem::size_of::<f32>() as u32) as u64,
+            size: (config.batch_size * config.vocab_size * std::mem::size_of::<f32>() as u32) as u64,
             usage: buffer_usage,
             mapped_at_creation: false,
         });
 
-        // Additional TransformerBlock scratch buffers [hidden_dim]
+        // Additional TransformerBlock scratch buffers [batch_size, hidden_dim]
         let scratch_input_norm = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("scratch_input_norm"),
-            size: (config.hidden_dim * std::mem::size_of::<f32>() as u32) as u64,
+            size: (config.batch_size * config.hidden_dim * std::mem::size_of::<f32>() as u32) as u64,
             usage: buffer_usage,
             mapped_at_creation: false,
         });
 
         let scratch_proj_out = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("scratch_proj_out"),
-            size: (config.hidden_dim * std::mem::size_of::<f32>() as u32) as u64,
+            size: (config.batch_size * config.hidden_dim * std::mem::size_of::<f32>() as u32) as u64,
             usage: buffer_usage,
             mapped_at_creation: false,
         });
 
         let scratch_hidden1 = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("scratch_hidden1"),
-            size: (config.hidden_dim * std::mem::size_of::<f32>() as u32) as u64,
+            size: (config.batch_size * config.hidden_dim * std::mem::size_of::<f32>() as u32) as u64,
             usage: buffer_usage,
             mapped_at_creation: false,
         });
 
         let scratch_ffn_norm = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("scratch_ffn_norm"),
-            size: (config.hidden_dim * std::mem::size_of::<f32>() as u32) as u64,
+            size: (config.batch_size * config.hidden_dim * std::mem::size_of::<f32>() as u32) as u64,
             usage: buffer_usage,
             mapped_at_creation: false,
         });
 
-        // Additional TransformerBlock scratch buffers [ffn_dim]
+        // Additional TransformerBlock scratch buffers [batch_size, ffn_dim]
         let scratch_swiglu = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("scratch_swiglu"),
-            size: (config.ffn_dim * std::mem::size_of::<f32>() as u32) as u64,
+            size: (config.batch_size * config.ffn_dim * std::mem::size_of::<f32>() as u32) as u64,
             usage: buffer_usage,
             mapped_at_creation: false,
         });
 
         let scratch_ffn_out = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("scratch_ffn_out"),
-            size: (config.hidden_dim * std::mem::size_of::<f32>() as u32) as u64,
+            size: (config.batch_size * config.hidden_dim * std::mem::size_of::<f32>() as u32) as u64,
             usage: buffer_usage,
             mapped_at_creation: false,
         });
 
-        // Attention intermediate buffers [num_heads * max_seq_len]
+        // Attention intermediate buffers [batch_size, num_heads, max_seq_len]
         let scores_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("scores_buf"),
-            size: (config.num_heads * config.max_seq_len * std::mem::size_of::<f32>() as u32) as u64,
+            size: (config.batch_size * config.num_heads * config.max_seq_len * std::mem::size_of::<f32>() as u32) as u64,
             usage: buffer_usage,
             mapped_at_creation: false,
         });
 
         let probs_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("probs_buf"),
-            size: (config.num_heads * config.max_seq_len * std::mem::size_of::<f32>() as u32) as u64,
+            size: (config.batch_size * config.num_heads * config.max_seq_len * std::mem::size_of::<f32>() as u32) as u64,
             usage: buffer_usage,
             mapped_at_creation: false,
         });
@@ -466,11 +477,12 @@ impl Model {
         let rope_cache = Self::create_rope_cache(device, config.max_seq_len, config.head_dim, 10000.0);
 
         tracing::info!(
-            "Allocated scratch buffers: hidden={}KB, q/k/v={}KB, ffn={}KB, logits={}KB",
-            (config.hidden_dim * 4 * 2) / 1024, // 2 hidden state buffers
-            ((config.num_heads + config.num_kv_heads * 2 + config.num_heads) * config.head_dim * 4) / 1024,
-            (config.ffn_dim * 4 * 2) / 1024, // gate + up
-            (config.vocab_size * 4) / 1024 // logits
+            "Allocated scratch buffers (batch_size={}): hidden={}KB, q/k/v={}KB, ffn={}KB, logits={}KB",
+            config.batch_size,
+            (config.batch_size * config.hidden_dim * 4 * 2) / 1024, // 2 hidden state buffers
+            (config.batch_size * ((config.num_heads + config.num_kv_heads * 2 + config.num_heads) * config.head_dim * 4)) / 1024,
+            (config.batch_size * config.ffn_dim * 4 * 2) / 1024, // gate + up
+            (config.batch_size * config.vocab_size * 4) / 1024 // logits
         );
 
         // === Pipeline Cache: Pre-compile all shaders ===
@@ -1128,6 +1140,20 @@ impl Model {
             tracing::warn!(
                 "max_seq_len ({}) is very large (>128K). This will use significant memory.",
                 config.max_seq_len
+            );
+        }
+        
+        // Validate batch_size
+        if config.batch_size == 0 {
+            return Err(crate::compute::ComputeError::InvalidDimensions(
+                "batch_size must be at least 1".into()
+            ));
+        }
+        
+        if config.batch_size > 64 {
+            tracing::warn!(
+                "batch_size ({}) is very large (>64). This will use significant VRAM. Consider reducing for better memory efficiency.",
+                config.batch_size
             );
         }
         

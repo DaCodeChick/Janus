@@ -267,6 +267,7 @@ impl From<&HuggingFaceConfig> for crate::model::ModelConfig {
             vocab_size: config.vocab_size,
             max_seq_len: config.max_seq_len(),
             rms_norm_eps: config.rms_norm_eps,
+            batch_size: 1, // Default to single-sequence inference
         }
     }
 }
