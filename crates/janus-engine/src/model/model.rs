@@ -908,6 +908,7 @@ impl Model {
             final_block_output,
             &self.scratch_ffn_norm,
             &self.output_norm_weight,
+            self.config.batch_size,
             self.config.hidden_dim,
             self.config.rms_norm_eps,
         )?;

@@ -25,24 +25,29 @@ struct SiluUniforms {
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 struct RmsNormUniforms {
-    size: u32,
+    batch_size: u32,
+    hidden_dim: u32,
     epsilon: f32,
-    _pad0: u32,
-    _pad1: u32,
+    _pad: u32,
 }
 
 /// Apply Root Mean Square Normalization (RMSNorm) with learned gamma weights
 ///
 /// Formula: output[i] = (input[i] / sqrt(mean(input^2) + epsilon)) * gamma[i]
 ///
+/// For batched processing: Each sequence in the batch is normalized independently.
+/// Input/Output: [batch_size, hidden_dim]
+/// Weights (gamma): [hidden_dim] (shared across batch)
+///
 /// # Arguments
 /// * `engine` - The compute engine containing GPU device and queue
 /// * `encoder` - Command encoder to record GPU commands
 /// * `pipeline_cache` - Pre-compiled pipeline cache
-/// * `input` - GPU buffer containing input values (f32 array)
-/// * `output` - Output buffer (pre-allocated)
-/// * `weights` - GPU buffer containing gamma weights (f32 array, same size as input)
-/// * `size` - Number of elements in the input
+/// * `input` - GPU buffer containing input values ([batch_size, hidden_dim] f32 array)
+/// * `output` - Output buffer (pre-allocated, same size as input)
+/// * `weights` - GPU buffer containing gamma weights ([hidden_dim] f32 array, shared across batch)
+/// * `batch_size` - Number of sequences in the batch
+/// * `hidden_dim` - Hidden dimension (size per sequence)
 /// * `epsilon` - Small constant for numerical stability (typically 1e-6)
 ///
 /// # Shader
@@ -54,7 +59,8 @@ pub fn rmsnorm(
     input: &wgpu::Buffer,
     output: &wgpu::Buffer,
     weights: &wgpu::Buffer,
-    size: u32,
+    batch_size: u32,
+    hidden_dim: u32,
     epsilon: f32,
 ) -> Result<()> {
     let device = engine.device();
@@ -62,10 +68,10 @@ pub fn rmsnorm(
 
     // Create uniforms buffer
     let uniforms = RmsNormUniforms {
-        size,
+        batch_size,
+        hidden_dim,
         epsilon,
-        _pad0: 0,
-        _pad1: 0,
+        _pad: 0,
     };
     let uniforms_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("rmsnorm_uniforms"),
@@ -174,8 +180,8 @@ pub fn rmsnorm(
         compute_pass.set_pipeline(&pipeline);
         compute_pass.set_bind_group(0, &bind_group, &[]);
 
-        // RMSNorm operates on a single vector (workgroup size = 1)
-        compute_pass.dispatch_workgroups(1, 1, 1);
+        // Each workgroup processes one sequence (batch_size workgroups)
+        compute_pass.dispatch_workgroups(batch_size, 1, 1);
     }
 
     Ok(())

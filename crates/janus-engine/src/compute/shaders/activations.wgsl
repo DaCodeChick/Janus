@@ -35,19 +35,23 @@ fn silu(@builtin(global_invocation_id) global_id: vec3<u32>) {
 }
 
 // ============================================================================
-// RMSNorm (Root Mean Square Normalization)
+// RMSNorm (Root Mean Square Normalization) - Batched per-sequence
 // ============================================================================
 // Formula: output[i] = (input[i] / sqrt(mean(input^2) + epsilon)) * gamma[i]
 //
-// This requires two passes:
-// 1. Compute sum of squares (with reduction)
+// For batched processing: Each sequence in the batch is normalized independently
+// Input/Output: [batch_size, hidden_dim]
+// Gamma weights: [hidden_dim] (shared across batch)
+//
+// This requires two passes PER SEQUENCE:
+// 1. Compute sum of squares (with reduction) within each sequence
 // 2. Normalize each element and apply gamma weights
 
 struct RmsNormUniforms {
-    size: u32,      // Number of elements
-    epsilon: f32,   // Small constant for numerical stability (typically 1e-6)
-    _pad0: u32,
-    _pad1: u32,
+    batch_size: u32,  // Number of sequences in batch
+    hidden_dim: u32,  // Hidden dimension (size per sequence)
+    epsilon: f32,     // Small constant for numerical stability (typically 1e-6)
+    _pad: u32,
 }
 
 @group(0) @binding(0) var<storage, read> rms_input: array<f32>;
@@ -55,9 +59,11 @@ struct RmsNormUniforms {
 @group(0) @binding(2) var<storage, read> gamma: array<f32>;
 @group(0) @binding(3) var<uniform> rms_uniforms: RmsNormUniforms;
 
-// Shared memory for parallel reduction
+// Shared memory for parallel reduction (one per workgroup/sequence)
 var<workgroup> shared_sum: array<f32, 256>;
 
+// Each workgroup processes one sequence
+// Workgroup size: 256 threads
 @compute @workgroup_size(256, 1, 1)
 fn rmsnorm(
     @builtin(global_invocation_id) global_id: vec3<u32>,
@@ -65,15 +71,23 @@ fn rmsnorm(
     @builtin(workgroup_id) workgroup_id: vec3<u32>,
 ) {
     let tid = local_id.x;
-    let size = rms_uniforms.size;
+    let batch_idx = workgroup_id.x;  // Each workgroup handles one sequence
+    
+    if (batch_idx >= rms_uniforms.batch_size) {
+        return;
+    }
+    
+    let hidden_dim = rms_uniforms.hidden_dim;
+    let base_idx = batch_idx * hidden_dim;
     
     // Phase 1: Compute sum of squares using parallel reduction
     var local_sum: f32 = 0.0;
     
-    // Each thread accumulates sum of squares for its stride
-    var idx = global_id.x;
-    while (idx < size) {
-        let val = rms_input[idx];
+    // Each thread accumulates sum of squares for its stride within this sequence
+    var idx = tid;
+    while (idx < hidden_dim) {
+        let global_idx = base_idx + idx;
+        let val = rms_input[global_idx];
         local_sum = local_sum + val * val;
         idx = idx + 256u;  // workgroup_size
     }
@@ -93,10 +107,10 @@ fn rmsnorm(
         stride = stride / 2u;
     }
     
-    // Thread 0 has the final sum of squares
+    // Thread 0 has the final sum of squares for this sequence
     var rms: f32;
     if (tid == 0u) {
-        let mean_square = shared_sum[0] / f32(size);
+        let mean_square = shared_sum[0] / f32(hidden_dim);
         rms = sqrt(mean_square + rms_uniforms.epsilon);
         // Store RMS in shared memory for all threads to access
         shared_sum[0] = rms;
@@ -105,10 +119,12 @@ fn rmsnorm(
     
     // Phase 2: Normalize each element and apply gamma weights
     rms = shared_sum[0];
-    idx = global_id.x;
-    while (idx < size) {
-        let normalized = rms_input[idx] / rms;
-        rms_output[idx] = normalized * gamma[idx];
+    idx = tid;
+    while (idx < hidden_dim) {
+        let global_idx = base_idx + idx;
+        let normalized = rms_input[global_idx] / rms;
+        // Gamma weights are shared across batch, indexed by position in hidden_dim
+        rms_output[global_idx] = normalized * gamma[idx];
         idx = idx + 256u;
     }
 }

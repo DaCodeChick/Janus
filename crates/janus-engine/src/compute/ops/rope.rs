@@ -14,10 +14,10 @@ use wgpu::util::DeviceExt;
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 struct RopeUniforms {
-    seq_len: u32,
+    batch_size: u32,
+    num_heads: u32,
     head_dim: u32,
     position: u32,
-    _pad: u32, // Padding for alignment (removed theta_base)
 }
 
 /// Apply Rotary Positional Embeddings (RoPE)
@@ -32,10 +32,11 @@ struct RopeUniforms {
 /// * `engine` - The compute engine containing GPU device and queue
 /// * `encoder` - Shared command encoder for recording GPU operations
 /// * `pipeline_cache` - Pre-compiled shader cache
-/// * `input` - GPU buffer containing input tensor (seq_len * head_dim elements)
+/// * `input` - GPU buffer containing input tensor ([batch_size, num_heads, head_dim] elements)
 /// * `output` - Pre-allocated output buffer (same size as input)
 /// * `rope_cache` - Pre-computed sin/cos values [max_seq_len * head_dim]
-/// * `seq_len` - Sequence length (number of tokens)
+/// * `batch_size` - Number of sequences in the batch
+/// * `num_heads` - Number of attention heads
 /// * `head_dim` - Dimension of each attention head (must be even)
 /// * `position` - Starting position in the sequence
 ///
@@ -49,7 +50,8 @@ pub fn rope(
     input: &wgpu::Buffer,
     output: &wgpu::Buffer,
     rope_cache: &wgpu::Buffer,
-    seq_len: u32,
+    batch_size: u32,
+    num_heads: u32,
     head_dim: u32,
     position: u32,
 ) -> Result<()> {
@@ -59,10 +61,10 @@ pub fn rope(
     let shader = &pipeline_cache.rope_shader;
 
     let uniforms = RopeUniforms {
-        seq_len,
+        batch_size,
+        num_heads,
         head_dim,
         position,
-        _pad: 0,
     };
     let uniforms_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("rope_uniforms"),
@@ -165,7 +167,8 @@ pub fn rope(
         compute_pass.set_bind_group(0, &bind_group, &[]);
 
         // Calculate workgroup count (256 threads per workgroup)
-        let total_elements = seq_len * head_dim;
+        // Process batch_size * num_heads * head_dim elements
+        let total_elements = batch_size * num_heads * head_dim;
         let workgroup_count = (total_elements + 255) / 256;
         compute_pass.dispatch_workgroups(workgroup_count, 1, 1);
     }

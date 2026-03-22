@@ -191,6 +191,7 @@ impl TransformerBlock {
             input,
             scratch_input_norm,
             &self.attn_norm_weight,
+            self.config.batch_size,
             self.config.hidden_dim,
             self.config.rms_norm_eps,
         )?;
@@ -246,6 +247,7 @@ impl TransformerBlock {
             scratch_q,
             scratch_q_rot, // separate output buffer
             rope_cache,
+            self.config.batch_size,
             self.config.num_heads,
             self.config.head_dim,
             seq_pos,
@@ -258,6 +260,7 @@ impl TransformerBlock {
             scratch_k,
             scratch_k_rot, // separate output buffer
             rope_cache,
+            self.config.batch_size,
             self.config.num_kv_heads,
             self.config.head_dim,
             seq_pos,
@@ -320,7 +323,7 @@ impl TransformerBlock {
             input,
             scratch_proj_out,
             scratch_hidden1,
-            self.config.hidden_dim,
+            self.config.batch_size * self.config.hidden_dim,
         )?;
 
         // ===================================================================
@@ -335,6 +338,7 @@ impl TransformerBlock {
             scratch_hidden1,
             scratch_ffn_norm,
             &self.ffn_norm_weight,
+            self.config.batch_size,
             self.config.hidden_dim,
             self.config.rms_norm_eps,
         )?;
@@ -374,7 +378,7 @@ impl TransformerBlock {
             pipeline_cache,
             scratch_gate,
             scratch_swiglu, // Use swiglu buffer as temp to avoid in-place conflict
-            self.config.ffn_dim,
+            self.config.batch_size * self.config.ffn_dim,
         )?;
 
         // Step 12: Element-wise multiply gate (after SiLU) and up (SwiGLU)
@@ -386,7 +390,7 @@ impl TransformerBlock {
             scratch_swiglu, // SiLU output
             scratch_up,
             scratch_gate, // Use gate buffer for output (safe reuse)
-            self.config.ffn_dim,
+            self.config.batch_size * self.config.ffn_dim,
         )?;
 
         // Step 13: Down projection
@@ -411,7 +415,7 @@ impl TransformerBlock {
             scratch_hidden1,
             scratch_ffn_out,
             output,
-            self.config.hidden_dim,
+            self.config.batch_size * self.config.hidden_dim,
         )?;
 
         Ok(())
