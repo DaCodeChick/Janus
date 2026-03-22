@@ -275,10 +275,25 @@ This project is licensed under the **LGPL-3.0-or-later** license. See [LICENSE](
 
 ## 📚 Documentation
 
-For more detailed documentation, see:
+### Comprehensive Guides
+
+- **[Architecture Guide](doc/ARCHITECTURE.md)** - System architecture, component diagrams, and design decisions
+- **[Shader Implementation Guide](doc/SHADER_GUIDE.md)** - Detailed WGSL shader documentation and optimization
+- **[Performance Tuning Guide](doc/PERFORMANCE_TUNING.md)** - Hardware-specific optimizations and benchmarking
+- **[Supported Models](doc/SUPPORTED_MODELS.md)** - Model compatibility and configuration
+- **[FP16 Implementation](doc/FP16_IMPLEMENTATION.md)** - Mixed-precision inference details
+
+### Examples
+
+- **[Basic Inference](crates/janus-engine/examples/inference.rs)** - Simple single-sequence generation
+- **[Batch Inference](crates/janus-engine/examples/batch_inference.rs)** - Process multiple prompts in parallel
+- **[Streaming Generation](crates/janus-engine/examples/streaming.rs)** - Token-by-token streaming output
+- **[Plugin Development](crates/janus-engine/examples/plugin_development.rs)** - Create custom inference plugins
+
+### API Reference
+
 - [janus-router README](crates/janus-router/README.md) - Routing logic documentation
 - [API Documentation](https://docs.rs/janus-engine) - Coming soon
-- [Examples](crates/janus-engine/examples/) - Code examples
 
 ## 🐛 Troubleshooting
 
@@ -298,6 +313,8 @@ Check that:
 - Release mode is enabled: `cargo build --release`
 - GPU is being used (check logs)
 - No background GPU processes are competing for resources
+
+**See [Performance Tuning Guide](doc/PERFORMANCE_TUNING.md) for detailed optimization strategies.**
 
 ---
 
