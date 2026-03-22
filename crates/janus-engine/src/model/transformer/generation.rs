@@ -292,17 +292,19 @@ impl Model {
             // Forward pass for all active sequences
             self.forward_batch(&last_tokens, seq_pos).await?;
 
-            // Sample next token for each sequence independently
-            // NOTE: This is a simplified implementation that uses the same sampling logic for all sequences
-            // In practice, we'd need to extract per-sequence logits and sample independently
+            // Sample next token for each sequence independently using batched sampling
+            let context_refs: Vec<&[u32]> = generated_tokens.iter().map(|v| v.as_slice()).collect();
+            let next_tokens = self.sampler.sample_batch(
+                &self.engine,
+                self.logits_buffer(),
+                batch_size as u32,
+                &context_refs
+            ).await?;
             
-            // For now, let's use a placeholder: sample the first sequence's logits
-            // A proper implementation would slice the logits buffer for each sequence
-            let next_token = self.sampler.sample(&self.engine, self.logits_buffer(), &generated_tokens[0]).await?;
-            
-            // Update all sequences with the same token (TEMPORARY - need per-sequence sampling)
+            // Update each sequence with its independently sampled token
             for i in 0..batch_size {
                 if !finished[i] {
+                    let next_token = next_tokens[i];
                     last_tokens[i] = next_token;
                     generated_tokens[i].push(next_token);
                     total_tokens_generated += 1;

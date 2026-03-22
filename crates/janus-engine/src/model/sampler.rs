@@ -120,6 +120,76 @@ impl Sampler {
         Ok(token_id)
     }
 
+    /// Sample tokens for a batch of sequences independently
+    ///
+    /// This method handles batched sampling by reading logits for all sequences
+    /// in a single GPU->CPU transfer and sampling each sequence independently.
+    ///
+    /// # Arguments
+    /// * `engine` - The compute engine
+    /// * `logits_buffer` - GPU buffer containing batched logits [batch_size, vocab_size]
+    /// * `batch_size` - Number of sequences in the batch
+    /// * `contexts` - Previously generated tokens for each sequence (for repetition penalty)
+    ///
+    /// # Returns
+    /// Vector of sampled token IDs, one per sequence
+    ///
+    /// # Example
+    /// ```no_run
+    /// # use janus_engine::{ComputeEngine, Sampler};
+    /// # async fn example(engine: ComputeEngine, sampler: Sampler, logits_buffer: wgpu::Buffer) {
+    /// let contexts = vec![vec![1, 2, 3], vec![1, 4, 5]]; // Two sequences
+    /// let context_refs: Vec<&[u32]> = contexts.iter().map(|v| v.as_slice()).collect();
+    /// let tokens = sampler.sample_batch(&engine, &logits_buffer, 2, &context_refs).await.unwrap();
+    /// assert_eq!(tokens.len(), 2); // One token per sequence
+    /// # }
+    /// ```
+    pub async fn sample_batch(
+        &self,
+        engine: &ComputeEngine,
+        logits_buffer: &wgpu::Buffer,
+        batch_size: u32,
+        contexts: &[&[u32]],
+    ) -> Result<Vec<u32>> {
+        // Validate batch size matches contexts
+        if contexts.len() != batch_size as usize {
+            return Err(crate::compute::ComputeError::Other(format!(
+                "Context length ({}) does not match batch_size ({})",
+                contexts.len(),
+                batch_size
+            )));
+        }
+
+        // Read all logits from GPU in a single transfer
+        let all_logits = self.read_batched_logits_from_gpu(engine, logits_buffer, batch_size).await?;
+
+        // Sample each sequence independently
+        let mut sampled_tokens = Vec::with_capacity(batch_size as usize);
+        
+        for (seq_idx, context) in contexts.iter().enumerate() {
+            // Extract logits for this sequence
+            let start = seq_idx * self.vocab_size as usize;
+            let end = start + self.vocab_size as usize;
+            let mut logits = all_logits[start..end].to_vec();
+
+            // Apply per-sequence repetition penalty
+            self.apply_repetition_penalty(&mut logits, context);
+
+            // Apply sampling strategy
+            let token_id = if self.config.temperature == 0.0 {
+                // Greedy decoding: select token with highest logit
+                self.argmax(&logits)
+            } else {
+                // Temperature sampling with optional top-k and top-p filtering
+                self.sample_with_temperature(&mut logits)
+            };
+
+            sampled_tokens.push(token_id);
+        }
+
+        Ok(sampled_tokens)
+    }
+
     /// Read logits from GPU buffer to CPU memory
     ///
     /// # Arguments
@@ -157,6 +227,71 @@ impl Sampler {
         let (sender, receiver) = futures::channel::oneshot::channel();
         buffer_slice.map_async(wgpu::MapMode::Read, move |result| {
             // Ignore send errors - if receiver is dropped, we'll catch it below
+            let _ = sender.send(result);
+        });
+
+        // Wait for the buffer to be mapped
+        let _ = device.poll(wgpu::PollType::wait_indefinitely());
+        
+        // Handle both receiver and mapping errors properly
+        let map_result = receiver
+            .await
+            .map_err(|_| crate::compute::ComputeError::BufferMappingFailed)?;
+        
+        map_result.map_err(|_| crate::compute::ComputeError::BufferMappingFailed)?;
+
+        // Read the data
+        let data = buffer_slice.get_mapped_range();
+        let logits: Vec<f32> = bytemuck::cast_slice(&data).to_vec();
+
+        // Clean up
+        drop(data);
+        staging_buffer.unmap();
+
+        Ok(logits)
+    }
+
+    /// Read batched logits from GPU buffer to CPU memory
+    ///
+    /// This reads logits for multiple sequences in a single GPU->CPU transfer,
+    /// which is more efficient than multiple individual transfers.
+    ///
+    /// # Arguments
+    /// * `engine` - The compute engine
+    /// * `logits_buffer` - GPU buffer containing batched logits [batch_size, vocab_size]
+    /// * `batch_size` - Number of sequences in the batch
+    ///
+    /// # Returns
+    /// Flat vector of logits: [seq0_logits..., seq1_logits..., ...]
+    async fn read_batched_logits_from_gpu(
+        &self,
+        engine: &ComputeEngine,
+        logits_buffer: &wgpu::Buffer,
+        batch_size: u32,
+    ) -> Result<Vec<f32>> {
+        let device = engine.device();
+        let queue = engine.queue();
+
+        // Create staging buffer for reading back to CPU
+        let buffer_size = (batch_size * self.vocab_size * std::mem::size_of::<f32>() as u32) as u64;
+        let staging_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("batched_logits_staging_buffer"),
+            size: buffer_size,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        // Copy from GPU buffer to staging buffer
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("batched_logits_copy_encoder"),
+        });
+        encoder.copy_buffer_to_buffer(logits_buffer, 0, &staging_buffer, 0, buffer_size);
+        queue.submit(Some(encoder.finish()));
+
+        // Map the staging buffer for reading
+        let buffer_slice = staging_buffer.slice(..);
+        let (sender, receiver) = futures::channel::oneshot::channel();
+        buffer_slice.map_async(wgpu::MapMode::Read, move |result| {
             let _ = sender.send(result);
         });
 
@@ -463,6 +598,7 @@ impl Sampler {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use wgpu::util::DeviceExt;
 
     #[test]
     fn test_argmax() {
@@ -546,4 +682,46 @@ mod tests {
         assert!(log_probs[2] > log_probs[1]);
         assert!(log_probs[1] > log_probs[0]);
     }
+
+    #[tokio::test]
+    async fn test_batched_sampling() {
+        // Create a simple compute engine
+        let engine = ComputeEngine::new().await.unwrap();
+        let sampler = Sampler::greedy(10); // Small vocab for testing
+        
+        // Create batched logits buffer: 2 sequences, 10 vocab tokens each
+        let batch_size = 2;
+        let _vocab_size = 10;
+        
+        // Sequence 0: highest logit at token 3
+        // Sequence 1: highest logit at token 7
+        let logits_data: Vec<f32> = vec![
+            // Sequence 0
+            0.1, 0.2, 0.3, 0.9, 0.4, 0.1, 0.2, 0.1, 0.3, 0.2,
+            // Sequence 1
+            0.2, 0.1, 0.3, 0.2, 0.1, 0.4, 0.3, 0.8, 0.2, 0.1,
+        ];
+        
+        let logits_buffer = engine.device().create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("test_batched_logits"),
+            contents: bytemuck::cast_slice(&logits_data),
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+        });
+        
+        // Create contexts for repetition penalty
+        let context0 = vec![1u32, 2u32]; // Some previous tokens
+        let context1 = vec![5u32, 6u32];
+        let contexts: Vec<&[u32]> = vec![&context0, &context1];
+        
+        // Sample batch
+        let tokens = sampler.sample_batch(&engine, &logits_buffer, batch_size, &contexts).await.unwrap();
+        
+        // Verify we got 2 tokens
+        assert_eq!(tokens.len(), 2);
+        
+        // With greedy sampling, should select highest logit for each sequence
+        assert_eq!(tokens[0], 3); // Highest in sequence 0
+        assert_eq!(tokens[1], 7); // Highest in sequence 1
+    }
 }
+
