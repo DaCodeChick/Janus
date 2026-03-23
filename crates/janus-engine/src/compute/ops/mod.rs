@@ -8,8 +8,10 @@
 //! - Positional embeddings (RoPE)
 //! - Attention mechanisms (scaled dot-product attention)
 //! - Element-wise operations (add, multiply)
+//! - Sampling operations (argmax)
 
 mod activation;
+mod argmax;
 mod attention;
 mod elementwise;
 mod matmul;
@@ -27,6 +29,7 @@ mod tests_q5k_q8_0;
 
 // Re-export all public functions
 pub use activation::{rmsnorm, silu};
+pub use argmax::argmax;
 pub use attention::compute_attention;
 pub use elementwise::{add_tensors, elementwise_mul};
 pub use matmul::{gemm, matmul};

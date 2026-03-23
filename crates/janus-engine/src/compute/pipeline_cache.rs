@@ -27,6 +27,7 @@ pub struct PipelineCache {
     pub gemm_q4_k_shader: wgpu::ShaderModule,
     pub gemm_q5_k_shader: wgpu::ShaderModule,
     pub gemm_q8_0_shader: wgpu::ShaderModule,
+    pub argmax_shader: wgpu::ShaderModule,
 
     // === Bind Group Layouts ===
     pub rmsnorm_layout: wgpu::BindGroupLayout,
@@ -42,6 +43,7 @@ pub struct PipelineCache {
     pub gemm_q4_k_layout: wgpu::BindGroupLayout,
     pub gemm_q5_k_layout: wgpu::BindGroupLayout,
     pub gemm_q8_0_layout: wgpu::BindGroupLayout,
+    pub argmax_layout: wgpu::BindGroupLayout,
 
     // === Compute Pipelines ===
     pub rmsnorm_pipeline: wgpu::ComputePipeline,
@@ -57,6 +59,7 @@ pub struct PipelineCache {
     pub gemm_q4_k_pipeline: wgpu::ComputePipeline,
     pub gemm_q5_k_pipeline: wgpu::ComputePipeline,
     pub gemm_q8_0_pipeline: wgpu::ComputePipeline,
+    pub argmax_pipeline: wgpu::ComputePipeline,
 }
 
 impl PipelineCache {
@@ -146,7 +149,12 @@ impl PipelineCache {
             source: wgpu::ShaderSource::Wgsl(include_str!("shaders/gemm_q8_0.wgsl").into()),
         });
 
-        println!("   ✅ {} shader modules compiled", 14);
+        let argmax_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("argmax_shader_cached"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/argmax.wgsl").into()),
+        });
+
+        println!("   ✅ {} shader modules compiled", 15);
 
         // ============================================
         // STEP 2: Create all bind group layouts
@@ -187,7 +195,10 @@ impl PipelineCache {
         let gemm_q5_k_layout = Self::create_gemm_q5_k_layout(device);
         let gemm_q8_0_layout = Self::create_gemm_q8_0_layout(device);
 
-        println!("   ✅ {} bind group layouts created", 13);
+        // Argmax layout
+        let argmax_layout = Self::create_argmax_layout(device);
+
+        println!("   ✅ {} bind group layouts created", 14);
 
         // ============================================
         // STEP 3: Create all compute pipelines
@@ -282,7 +293,15 @@ impl PipelineCache {
             "main",
         );
 
-        println!("   ✅ {} compute pipelines created", 13);
+        let argmax_pipeline = Self::create_pipeline(
+            device,
+            "argmax_pipeline",
+            &argmax_layout,
+            &argmax_shader,
+            "main",
+        );
+
+        println!("   ✅ {} compute pipelines created", 14);
         println!("✅ Pipeline cache ready!");
 
         Self {
@@ -301,6 +320,7 @@ impl PipelineCache {
             gemm_q4_k_shader,
             gemm_q5_k_shader,
             gemm_q8_0_shader,
+            argmax_shader,
             rmsnorm_layout,
             silu_layout,
             gemm_layout,
@@ -314,6 +334,7 @@ impl PipelineCache {
             gemm_q4_k_layout,
             gemm_q5_k_layout,
             gemm_q8_0_layout,
+            argmax_layout,
             rmsnorm_pipeline,
             silu_pipeline,
             gemm_pipeline,
@@ -327,6 +348,7 @@ impl PipelineCache {
             gemm_q4_k_pipeline,
             gemm_q5_k_pipeline,
             gemm_q8_0_pipeline,
+            argmax_pipeline,
         }
     }
 
@@ -916,5 +938,46 @@ impl PipelineCache {
     fn create_gemm_q8_0_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
         // Same as Q4K
         Self::create_gemm_q4_k_layout(device)
+    }
+
+    fn create_argmax_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
+        device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("argmax_bind_group_layout"),
+            entries: &[
+                // Input logits (storage, read-only)
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                // Output token IDs (storage, read-write)
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: false },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                // Uniforms
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+            ],
+        })
     }
 }

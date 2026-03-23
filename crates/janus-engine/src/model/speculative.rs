@@ -420,9 +420,11 @@ impl SpeculativeDecoder {
 
         // Use the target model's sampler to sample from the corrected distribution
         // This ensures we maintain the same sampling characteristics (temperature, top-k, etc.)
+        // Note: We pass None for pipeline_cache since speculative decoding typically uses
+        // temperature sampling, not greedy decoding
         self.target_model
             .sampler()
-            .sample(self.target_model.engine(), &logits_buffer, &[])
+            .sample(self.target_model.engine(), None, &logits_buffer, &[])
             .await
     }
 

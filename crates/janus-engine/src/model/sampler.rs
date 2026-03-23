@@ -13,6 +13,7 @@
 //! - Mirostat sampling
 
 use crate::compute::{ComputeEngine, Result};
+use crate::compute::pipeline_cache::PipelineCache;
 
 /// Sampling strategy configuration
 #[derive(Debug, Clone)]
@@ -126,6 +127,187 @@ impl Sampler {
     /// Sample the next token from logits
     ///
     /// This function:
+    /// 1. For greedy decoding with no/minimal repetition penalty: Uses GPU argmax (fast path)
+    /// 2. Otherwise: Reads logits to CPU, applies penalties, and samples
+    ///
+    /// # Arguments
+    /// * `engine` - The compute engine for GPU operations
+    /// * `pipeline_cache` - Pre-compiled pipeline cache (optional, for GPU argmax optimization)
+    /// * `logits_buffer` - GPU buffer containing logits [vocab_size] floats
+    /// * `context` - Previously generated tokens for repetition penalty
+    ///
+    /// # Returns
+    /// The selected token ID (0 to vocab_size - 1)
+    ///
+    /// # Sampling Strategies
+    /// - If temperature == 0.0 and repetition_penalty ~= 1.0 and pipeline_cache provided: GPU argmax (fastest)
+    /// - If temperature == 0.0: CPU argmax with repetition penalty
+    /// - If temperature > 0.0: Temperature sampling with optional top-k and top-p filtering
+    pub async fn sample(
+        &self,
+        engine: &ComputeEngine,
+        pipeline_cache: Option<&PipelineCache>,
+        logits_buffer: &wgpu::Buffer,
+        context: &[u32],
+    ) -> Result<u32> {
+        // Fast path: GPU-side greedy sampling when repetition penalty is disabled/minimal
+        // and pipeline cache is available (to avoid expensive shader recompilation)
+        // This avoids expensive GPU→CPU logits transfer (~128KB for 32K vocab)
+        let use_gpu_argmax = self.config.temperature == 0.0 
+            && (self.config.repetition_penalty - 1.0).abs() < 0.01
+            && pipeline_cache.is_some();
+        
+        if use_gpu_argmax {
+            tracing::debug!("Using GPU argmax fast path");
+            return self.sample_greedy_gpu(engine, pipeline_cache.unwrap(), logits_buffer).await;
+        } else {
+            tracing::debug!("Using CPU sampling (temp={}, rep_pen={}, has_cache={})",
+                self.config.temperature, self.config.repetition_penalty, pipeline_cache.is_some());
+        }
+
+        // Slow path: CPU-side sampling with full feature support
+        // Read logits from GPU to CPU
+        let mut logits = self.read_logits_from_gpu(engine, logits_buffer).await?;
+
+        // Apply repetition penalty to prevent infinite loops
+        self.apply_repetition_penalty(&mut logits, context);
+
+        // Apply sampling strategy
+        let token_id = if self.config.temperature == 0.0 {
+            // Greedy decoding: select token with highest logit
+            self.argmax(&logits)
+        } else {
+            // Temperature sampling with optional top-k and top-p filtering
+            self.sample_with_temperature(&mut logits)
+        };
+
+        Ok(token_id)
+    }
+
+    /// GPU-accelerated greedy sampling (argmax) without repetition penalty
+    ///
+    /// This method performs argmax entirely on the GPU, avoiding the expensive
+    /// GPU→CPU logits transfer. For a 32K vocabulary (128KB of f32 data), this
+    /// reduces per-token overhead from ~5-10ms to <1ms.
+    ///
+    /// # Arguments
+    /// * `engine` - The compute engine
+    /// * `pipeline_cache` - Pre-compiled pipeline cache (avoids shader recompilation)
+    /// * `logits_buffer` - GPU buffer containing logits [vocab_size] f32
+    ///
+    /// # Returns
+    /// Token ID with the highest logit value
+    ///
+    /// # Note
+    /// This method does NOT apply repetition penalty. Use the regular `sample()`
+    /// method if you need repetition penalty support.
+    async fn sample_greedy_gpu(
+        &self,
+        engine: &ComputeEngine,
+        pipeline_cache: &PipelineCache,
+        logits_buffer: &wgpu::Buffer,
+    ) -> Result<u32> {
+        let device = engine.device();
+        let queue = engine.queue();
+
+        // Create output buffer for token ID (single u32)
+        let output_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("argmax_output"),
+            size: std::mem::size_of::<u32>() as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+
+        // Create command encoder and run argmax on GPU
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("argmax_encoder"),
+        });
+
+        crate::compute::ops::argmax(
+            engine,
+            &mut encoder,
+            pipeline_cache,
+            logits_buffer,
+            &output_buffer,
+            self.vocab_size,
+            1, // batch_size = 1
+        )?;
+
+        queue.submit(Some(encoder.finish()));
+
+        // Read back the single token ID (only 4 bytes!)
+        let token_id = self.read_token_from_gpu(engine, &output_buffer).await?;
+
+        Ok(token_id)
+    }
+
+    /// Read a single token ID from GPU buffer to CPU
+    ///
+    /// # Arguments
+    /// * `engine` - The compute engine
+    /// * `token_buffer` - GPU buffer containing a single u32 token ID
+    ///
+    /// # Returns
+    /// The token ID
+    async fn read_token_from_gpu(
+        &self,
+        engine: &ComputeEngine,
+        token_buffer: &wgpu::Buffer,
+    ) -> Result<u32> {
+        let device = engine.device();
+        let queue = engine.queue();
+
+        // Create staging buffer for reading back to CPU (just 4 bytes!)
+        let staging_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("token_staging_buffer"),
+            size: std::mem::size_of::<u32>() as u64,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        // Copy from GPU buffer to staging buffer
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("token_copy_encoder"),
+        });
+        encoder.copy_buffer_to_buffer(
+            token_buffer,
+            0,
+            &staging_buffer,
+            0,
+            std::mem::size_of::<u32>() as u64,
+        );
+        queue.submit(Some(encoder.finish()));
+
+        // Map the staging buffer for reading
+        let buffer_slice = staging_buffer.slice(..);
+        let (sender, receiver) = futures::channel::oneshot::channel();
+        buffer_slice.map_async(wgpu::MapMode::Read, move |result| {
+            let _ = sender.send(result);
+        });
+
+        // Wait for the buffer to be mapped
+        let _ = device.poll(wgpu::PollType::wait_indefinitely());
+
+        let map_result = receiver
+            .await
+            .map_err(|_| crate::compute::ComputeError::BufferMappingFailed)?;
+
+        map_result.map_err(|_| crate::compute::ComputeError::BufferMappingFailed)?;
+
+        // Read the data (just 4 bytes)
+        let data = buffer_slice.get_mapped_range();
+        let token_id: u32 = bytemuck::cast_slice(&data)[0];
+
+        // Clean up
+        drop(data);
+        staging_buffer.unmap();
+
+        Ok(token_id)
+    }
+
+    /// Sample the next token from logits (deprecated: use version with pipeline_cache)
+    ///
+    /// This function:
     /// 1. Reads the logits buffer from GPU to CPU
     /// 2. Applies repetition penalty based on context
     /// 3. Applies the sampling strategy (greedy, temperature, top-k, top-p)
@@ -142,7 +324,7 @@ impl Sampler {
     /// # Sampling Strategies
     /// - If temperature == 0.0: Greedy decoding (argmax)
     /// - If temperature > 0.0: Temperature sampling with optional top-k and top-p filtering
-    pub async fn sample(
+    pub async fn sample_legacy(
         &self,
         engine: &ComputeEngine,
         logits_buffer: &wgpu::Buffer,
@@ -693,6 +875,7 @@ mod tests {
             top_p: 1.0,
             repetition_penalty: 1.0,
             beam_width: 4,
+            max_tokens: 128,
         };
         let sampler = Sampler::new(config, 32000);
         assert!(sampler.is_beam_search_enabled());

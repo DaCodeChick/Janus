@@ -116,7 +116,7 @@ impl Model {
             self.forward(last_token, seq_pos).await?;
 
             // Step F: Sample next token from logits buffer (pass context for repetition penalty)
-            let next_token = self.sampler.sample(&self.engine, self.logits_buffer(), &generated_tokens).await?;
+            let next_token = self.sampler.sample(&self.engine, Some(&self.pipeline_cache), self.logits_buffer(), &generated_tokens).await?;
             
             tracing::debug!("Sampled token ID: {}", next_token);
 
@@ -289,7 +289,7 @@ impl Model {
             self.forward(last_token, seq_pos).await?;
 
             // Sample next token
-            let next_token = self.sampler.sample(&self.engine, self.logits_buffer(), &generated_tokens).await?;
+            let next_token = self.sampler.sample(&self.engine, Some(&self.pipeline_cache), self.logits_buffer(), &generated_tokens).await?;
             
             tracing::debug!("Sampled token ID: {}", next_token);
             tokens_generated += 1;
