@@ -35,3 +35,6 @@ thiserror = { workspace = true }
 
 # UUID generation
 uuid = { version = "1.11", features = ["v4"] }
+
+# GPU compute (for examples)
+wgpu = { workspace = true }

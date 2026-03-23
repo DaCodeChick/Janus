@@ -21,7 +21,7 @@
 //!     }'
 
 use janus_engine::{
-    ChatFormatter, ComputeEngine, GGUFFile, HuggingFaceConfig, Model, ModelConfig, ModelLoader,
+    ChatFormatter, ComputeEngine, GGUFFile, HuggingFaceConfig, Model, ModelConfig,
     Sampler, SamplerConfig, Tokenizer, TransformerBlock, TransformerBlockConfig,
 };
 use janus_server::{create_router, handlers::AppState};
@@ -161,7 +161,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Load config
     let hf_config = HuggingFaceConfig::from_file(&config_path)?;
-    let model_config = ModelConfig::from_huggingface(&hf_config)?;
+    let model_config: ModelConfig = (&hf_config).into();
 
     // Load tokenizer
     let tokenizer = Tokenizer::from_file(&tokenizer_path)?;
@@ -175,11 +175,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         beam_width: 1,
         max_tokens: 512,
     };
-    let sampler = Sampler::new(sampler_config, tokenizer.vocab_size());
+    let sampler = Sampler::new(sampler_config, tokenizer.vocab_size() as u32);
 
     // Build transformer blocks
     let mut blocks = Vec::new();
-    let block_config = TransformerBlockConfig::from_model_config(&model_config);
+    let block_config = TransformerBlockConfig {
+        batch_size: model_config.batch_size,
+        hidden_dim: model_config.hidden_dim,
+        num_heads: model_config.num_heads,
+        num_kv_heads: model_config.num_kv_heads,
+        head_dim: model_config.head_dim,
+        ffn_dim: model_config.ffn_dim,
+        rms_norm_eps: model_config.rms_norm_eps,
+    };
 
     for layer_idx in 0..model_config.num_layers {
         tracing::info!("Building transformer block {}/{}", layer_idx + 1, model_config.num_layers);
@@ -187,8 +195,36 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         blocks.push(block);
     }
 
+    // Extract embedding and output tensors
+    let token_embedding_table = tensors
+        .get("token_embd.weight")
+        .or_else(|| tensors.get("model.embed_tokens.weight"))
+        .ok_or("Could not find token embedding table")?
+        .clone();
+
+    let output_norm_weight = tensors
+        .get("output_norm.weight")
+        .or_else(|| tensors.get("model.norm.weight"))
+        .ok_or("Could not find output normalization weight")?
+        .clone();
+
+    let lm_head_weight = tensors
+        .get("output.weight")
+        .or_else(|| tensors.get("lm_head.weight"))
+        .ok_or("Could not find LM head weight")?
+        .clone();
+
     // Create model
-    let model = Model::new(engine, model_config, blocks, tokenizer, sampler)?;
+    let model = Model::new(
+        model_config,
+        engine,
+        tokenizer,
+        sampler,
+        token_embedding_table,
+        blocks,
+        output_norm_weight,
+        lm_head_weight,
+    )?;
 
     // Create chat formatter
     let model_name = model_path
