@@ -16,19 +16,8 @@
 //!   cargo run --example chat_server ./models/llama-7b/model.gguf
 //!   cargo run --example chat_server ./models/llama-7b/model-00001-of-00002.safetensors
 //!
-//! Once running, visit http://localhost:8080 in your browser for API documentation
-//! and examples, or test directly with curl:
-//!
-//!   curl http://localhost:8080/v1/chat/completions \
-//!     -H "Content-Type: application/json" \
-//!     -d '{
-//!       "model": "model",
-//!       "messages": [
-//!         {"role": "system", "content": "You are a helpful assistant."},
-//!         {"role": "user", "content": "Hello!"}
-//!       ],
-//!       "stream": true
-//!     }'
+//! Once running, open http://localhost:8080/chat in your browser for an
+//! interactive chat interface, or visit http://localhost:8080 for API docs.
 
 use janus_engine::{
     ChatFormatter, ComputeEngine, GGUFLoader, SafetensorsLoader, HuggingFaceConfig, Model, 
@@ -300,10 +289,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Start server
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
-    tracing::info!("Starting server on http://{}", addr);
-    tracing::info!("Open http://{} in your browser for API documentation", addr);
-    tracing::info!("Chat endpoint: http://{}/v1/chat/completions", addr);
-    tracing::info!("Health check: http://{}/health", addr);
+    tracing::info!("🚀 Starting Janus Chat Server on http://{}", addr);
+    tracing::info!("");
+    tracing::info!("💬 Open the chat UI: http://{}/chat", addr);
+    tracing::info!("📖 API docs: http://{}", addr);
+    tracing::info!("💚 Health check: http://{}/health", addr);
+    tracing::info!("");
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app).await?;
