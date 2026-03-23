@@ -203,6 +203,18 @@ pub struct Model {
     /// Attention probabilities buffer (after softmax) [num_heads * max_seq_len]
     probs_buf: Buffer,
 
+    /// Reusable output buffer for GPU argmax token (single u32)
+    argmax_output_buf: Buffer,
+
+    /// Reusable staging buffer for reading GPU argmax token (single u32)
+    argmax_staging_buf: Buffer,
+
+    /// Uniform buffer for GPU argmax parameters
+    _argmax_uniform_buf: Buffer,
+
+    /// Reusable bind group for GPU argmax fast path
+    argmax_bind_group: wgpu::BindGroup,
+
     // === RoPE Cache ===
     /// Pre-computed sin/cos values for RoPE [max_seq_len * head_dim]
     /// Layout: [position * head_dim + dim] contains (cos, sin) pair

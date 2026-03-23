@@ -147,6 +147,7 @@ impl Sampler {
         &self,
         engine: &ComputeEngine,
         pipeline_cache: Option<&PipelineCache>,
+        argmax_resources: Option<(&wgpu::Buffer, &wgpu::Buffer, &wgpu::BindGroup)>,
         logits_buffer: &wgpu::Buffer,
         context: &[u32],
     ) -> Result<u32> {
@@ -155,14 +156,32 @@ impl Sampler {
         // This avoids expensive GPU→CPU logits transfer (~128KB for 32K vocab)
         let use_gpu_argmax = self.config.temperature == 0.0 
             && (self.config.repetition_penalty - 1.0).abs() < 0.01
-            && pipeline_cache.is_some();
+            && pipeline_cache.is_some()
+            && argmax_resources.is_some();
         
         if use_gpu_argmax {
             tracing::debug!("Using GPU argmax fast path");
-            return self.sample_greedy_gpu(engine, pipeline_cache.unwrap(), logits_buffer).await;
+            if let (Some(cache), Some((output_buffer, staging_buffer, bind_group))) =
+                (pipeline_cache, argmax_resources)
+            {
+                return self
+                    .sample_greedy_gpu(
+                        engine,
+                        cache,
+                        output_buffer,
+                        staging_buffer,
+                        bind_group,
+                    )
+                    .await;
+            }
         } else {
-            tracing::debug!("Using CPU sampling (temp={}, rep_pen={}, has_cache={})",
-                self.config.temperature, self.config.repetition_penalty, pipeline_cache.is_some());
+            tracing::debug!(
+                "Using CPU sampling (temp={}, rep_pen={}, has_cache={}, has_argmax_resources={})",
+                self.config.temperature,
+                self.config.repetition_penalty,
+                pipeline_cache.is_some(),
+                argmax_resources.is_some()
+            );
         }
 
         // Slow path: CPU-side sampling with full feature support
@@ -205,87 +224,47 @@ impl Sampler {
         &self,
         engine: &ComputeEngine,
         pipeline_cache: &PipelineCache,
-        logits_buffer: &wgpu::Buffer,
+        output_buffer: &wgpu::Buffer,
+        staging_buffer: &wgpu::Buffer,
+        bind_group: &wgpu::BindGroup,
     ) -> Result<u32> {
         let device = engine.device();
         let queue = engine.queue();
 
-        // Create output buffer for token ID (single u32)
-        let output_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("argmax_output"),
-            size: std::mem::size_of::<u32>() as u64,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-            mapped_at_creation: false,
-        });
-
-        // Create command encoder and run argmax on GPU
+        // Single command encoder for both argmax and copy operations
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("argmax_encoder"),
+            label: Some("argmax_and_copy_encoder"),
         });
 
-        crate::compute::ops::argmax(
-            engine,
-            &mut encoder,
-            pipeline_cache,
-            logits_buffer,
-            &output_buffer,
-            self.vocab_size,
-            1, // batch_size = 1
-        )?;
-
-        queue.submit(Some(encoder.finish()));
-
-        // Read back the single token ID (only 4 bytes!)
-        let token_id = self.read_token_from_gpu(engine, &output_buffer).await?;
-
-        Ok(token_id)
-    }
-
-    /// Read a single token ID from GPU buffer to CPU
-    ///
-    /// # Arguments
-    /// * `engine` - The compute engine
-    /// * `token_buffer` - GPU buffer containing a single u32 token ID
-    ///
-    /// # Returns
-    /// The token ID
-    async fn read_token_from_gpu(
-        &self,
-        engine: &ComputeEngine,
-        token_buffer: &wgpu::Buffer,
-    ) -> Result<u32> {
-        let device = engine.device();
-        let queue = engine.queue();
-
-        // Create staging buffer for reading back to CPU (just 4 bytes!)
-        let staging_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("token_staging_buffer"),
-            size: std::mem::size_of::<u32>() as u64,
-            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
+        let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            label: Some("argmax_pass"),
+            timestamp_writes: None,
         });
+        compute_pass.set_pipeline(&pipeline_cache.argmax_pipeline);
+        compute_pass.set_bind_group(0, bind_group, &[]);
+        compute_pass.dispatch_workgroups(1, 1, 1);
+        drop(compute_pass);
 
-        // Copy from GPU buffer to staging buffer
-        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("token_copy_encoder"),
-        });
+        // Copy result to staging buffer in the same command buffer
         encoder.copy_buffer_to_buffer(
-            token_buffer,
+            &output_buffer,
             0,
             &staging_buffer,
             0,
             std::mem::size_of::<u32>() as u64,
         );
+
+        // Submit both operations together
         queue.submit(Some(encoder.finish()));
 
-        // Map the staging buffer for reading
+        // Map staging buffer and read result
         let buffer_slice = staging_buffer.slice(..);
         let (sender, receiver) = futures::channel::oneshot::channel();
         buffer_slice.map_async(wgpu::MapMode::Read, move |result| {
             let _ = sender.send(result);
         });
 
-        // Wait for the buffer to be mapped
+        // Wait for GPU completion
         let _ = device.poll(wgpu::PollType::wait_indefinitely());
 
         let map_result = receiver
@@ -294,7 +273,7 @@ impl Sampler {
 
         map_result.map_err(|_| crate::compute::ComputeError::BufferMappingFailed)?;
 
-        // Read the data (just 4 bytes)
+        // Read the token ID (just 4 bytes)
         let data = buffer_slice.get_mapped_range();
         let token_id: u32 = bytemuck::cast_slice(&data)[0];
 
@@ -953,4 +932,3 @@ mod tests {
         assert_eq!(tokens[1], 7); // Highest in sequence 1
     }
 }
-

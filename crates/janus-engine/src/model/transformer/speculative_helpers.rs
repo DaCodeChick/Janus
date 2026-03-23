@@ -71,7 +71,20 @@ impl Model {
     /// # Arguments
     /// * `context` - Previously generated tokens for repetition penalty
     pub(crate) async fn sample_next_token(&self, context: &[u32]) -> Result<u32> {
-        self.sampler.sample(&self.engine, Some(&self.pipeline_cache), &self.logits_buf, context).await
+        self
+            .sampler
+            .sample(
+                &self.engine,
+                Some(&self.pipeline_cache),
+                Some((
+                    &self.argmax_output_buf,
+                    &self.argmax_staging_buf,
+                    &self.argmax_bind_group,
+                )),
+                &self.logits_buf,
+                context,
+            )
+            .await
     }
 
     /// Get mutable reference to KV cache (for cache synchronization)

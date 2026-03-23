@@ -424,7 +424,7 @@ impl SpeculativeDecoder {
         // temperature sampling, not greedy decoding
         self.target_model
             .sampler()
-            .sample(self.target_model.engine(), None, &logits_buffer, &[])
+            .sample(self.target_model.engine(), None, None, &logits_buffer, &[])
             .await
     }
 
@@ -658,4 +658,3 @@ mod tests {
         stats.print();
     }
 }
-

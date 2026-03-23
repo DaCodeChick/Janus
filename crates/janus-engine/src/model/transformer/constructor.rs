@@ -333,6 +333,20 @@ impl Model {
             mapped_at_creation: false,
         });
 
+        let argmax_output_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("argmax_output_buf"),
+            size: std::mem::size_of::<u32>() as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+
+        let argmax_staging_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("argmax_staging_buf"),
+            size: std::mem::size_of::<u32>() as u64,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
         // === RoPE Cache: Pre-compute sin/cos values ===
         tracing::info!("Pre-computing RoPE sin/cos cache...");
         let rope_cache =
@@ -350,6 +364,32 @@ impl Model {
         // === Pipeline Cache: Pre-compile all shaders ===
         tracing::info!("Pre-compiling GPU shaders and pipelines...");
         let pipeline_cache = PipelineCache::new(device);
+
+        let argmax_uniform_data = [config.vocab_size, config.batch_size, 0u32, 0u32];
+        let argmax_uniform_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("argmax_uniform_buf"),
+            contents: bytemuck::cast_slice(&argmax_uniform_data),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+
+        let argmax_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("argmax_bind_group_reusable"),
+            layout: &pipeline_cache.argmax_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: logits_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: argmax_output_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: argmax_uniform_buf.as_entire_binding(),
+                },
+            ],
+        });
 
         tracing::info!(
             "Initialized model: {} layers, hidden_dim={}, vocab_size={}",
@@ -387,6 +427,10 @@ impl Model {
             scratch_ffn_out,
             scores_buf,
             probs_buf,
+            argmax_output_buf,
+            argmax_staging_buf,
+            _argmax_uniform_buf: argmax_uniform_buf,
+            argmax_bind_group,
             rope_cache,
             pipeline_cache,
         })
