@@ -256,7 +256,7 @@ async fn test_compression_not_enough_tokens() {
     );
     
     // Load pipeline cache (needed for compress to work)
-    let pipeline_cache = PipelineCache::new(engine.device()).unwrap();
+    let pipeline_cache = PipelineCache::new(engine.device());
     
     let result = cache.compress(&engine, &mut encoder, &pipeline_cache);
     assert!(result.is_ok());
@@ -357,7 +357,7 @@ async fn test_compress_disabled_cache_returns_error() {
         }
     );
     
-    let pipeline_cache = PipelineCache::new(engine.device()).unwrap();
+    let pipeline_cache = PipelineCache::new(engine.device());
     
     // Attempt to compress should fail
     let result = cache.compress(&engine, &mut encoder, &pipeline_cache);

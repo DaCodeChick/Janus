@@ -3,6 +3,16 @@
 use super::Model;
 use crate::compute::Result;
 
+fn has_stop_suffix(text: &str, recent_text_window: &str, stop_strings: Option<&[String]>) -> bool {
+    if let Some(stops) = stop_strings {
+        return stops
+            .iter()
+            .any(|stop| text.ends_with(stop) || recent_text_window.ends_with(stop));
+    }
+
+    false
+}
+
 impl Model {
     /// Generate text autoregressively using sampler's max_tokens configuration
     ///
@@ -101,6 +111,7 @@ impl Model {
         // High-precision benchmark timing
         let generation_start = std::time::Instant::now();
         let mut tokens_generated = 0u32;
+        let eos_token_id = self.tokenizer.eos_token_id();
 
         for step in 0..max_tokens {
             // Check sequence length limit
@@ -136,15 +147,8 @@ impl Model {
             // Increment tokens generated counter
             tokens_generated += 1;
 
-            // Check for EOS token (token ID 2 for LLaMA architectures)
-            if next_token == 2 {
-                tracing::info!("Generated EOS token (ID: 2), stopping generation");
-                eprintln!("\n[Generation stopped: EOS token (ID: 2) generated]");
-                break;
-            }
-            
-            // Also check tokenizer's EOS token if available
-            if let Some(eos_id) = self.tokenizer.eos_token_id() {
+            // Check tokenizer-configured EOS token dynamically
+            if let Some(eos_id) = eos_token_id {
                 if next_token == eos_id {
                     tracing::info!("Generated EOS token (ID: {}), stopping generation", eos_id);
                     eprintln!("\n[Generation stopped: EOS token (ID: {}) generated]", eos_id);
@@ -285,6 +289,12 @@ impl Model {
         let mut generated_tokens = Vec::new();
         let mut printed_len = 0;
         let needs_incremental_text = stop_strings.is_some() || callback.is_some();
+        let eos_token_id = self.tokenizer.eos_token_id();
+        let max_stop_len = stop_strings
+            .map(|stops| stops.iter().map(|s| s.len()).max().unwrap_or(0))
+            .unwrap_or(0);
+        let mut recent_text_window = String::new();
+        let max_recent_window_len = max_stop_len.saturating_mul(4);
 
         // High-precision benchmark timing
         let generation_start = std::time::Instant::now();
@@ -321,13 +331,8 @@ impl Model {
             tracing::debug!("Sampled token ID: {}", next_token);
             tokens_generated += 1;
 
-            // Check for EOS token
-            if next_token == 2 {
-                tracing::info!("Generated EOS token (ID: 2), stopping generation");
-                break;
-            }
-            
-            if let Some(eos_id) = self.tokenizer.eos_token_id() {
+            // Check tokenizer-configured EOS token dynamically
+            if let Some(eos_id) = eos_token_id {
                 if next_token == eos_id {
                     tracing::info!("Generated EOS token (ID: {}), stopping generation", eos_id);
                     break;
@@ -347,9 +352,9 @@ impl Model {
                 if let Some(stop_strs) = stop_strings {
                     let mut should_stop = false;
                     for stop_str in stop_strs {
-                        if full_text.contains(stop_str) {
+                        if full_text.ends_with(stop_str) {
                             tracing::info!(
-                                "Stop string '{}' detected, stopping generation",
+                                "Stop string '{}' suffix detected, stopping generation",
                                 stop_str
                             );
                             should_stop = true;
@@ -364,6 +369,25 @@ impl Model {
                 // Stream only the newly generated text via callback
                 if full_text.len() > printed_len {
                     let new_text = &full_text[printed_len..];
+
+                    if max_recent_window_len > 0 {
+                        recent_text_window.push_str(new_text);
+                        while recent_text_window.len() > max_recent_window_len {
+                            if let Some(first_char) = recent_text_window.chars().next() {
+                                let trim_len = first_char.len_utf8();
+                                recent_text_window.drain(..trim_len);
+                            } else {
+                                break;
+                            }
+                        }
+                    }
+
+                    // Stop on stop-string suffix even when EOS token is not emitted exactly
+                    if has_stop_suffix(&full_text, &recent_text_window, stop_strings) {
+                        tracing::info!("Stop string suffix detected, stopping generation");
+                        break;
+                    }
+
                     if let Some(ref mut cb) = callback {
                         if !cb(new_text) {
                             tracing::info!("Callback requested stop");
@@ -545,7 +569,7 @@ impl Model {
             .collect();
         let mut generated_tokens: Vec<Vec<u32>> = vec![Vec::new(); batch_size];
         let mut finished: Vec<bool> = vec![false; batch_size];
-        let eos_token_id = self.tokenizer.eos_token_id().unwrap_or(2);
+        let eos_token_id = self.tokenizer.eos_token_id();
 
         // Print prompts
         for (idx, prompt) in prompts.iter().enumerate() {
@@ -594,9 +618,11 @@ impl Model {
                     total_tokens_generated += 1;
 
                     // Check for EOS
-                    if next_token == eos_token_id || next_token == 2 {
-                        finished[i] = true;
-                        tracing::info!("Sequence {} finished (EOS)", i + 1);
+                    if let Some(eos_id) = eos_token_id {
+                        if next_token == eos_id {
+                            finished[i] = true;
+                            tracing::info!("Sequence {} finished (EOS)", i + 1);
+                        }
                     }
                 }
             }
@@ -643,5 +669,37 @@ impl Model {
         );
 
         Ok(results)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::has_stop_suffix;
+
+    #[test]
+    fn test_stop_suffix_detects_direct_suffix() {
+        let stops = vec!["</s>".to_string(), "<|im_end|>".to_string()];
+        let text = "Hello world</s>";
+        assert!(has_stop_suffix(text, "", Some(&stops)));
+    }
+
+    #[test]
+    fn test_stop_suffix_detects_recent_window_suffix() {
+        let stops = vec!["<|eot_id|>".to_string()];
+        let text = "Partial response";
+        let recent = "...<|eot_id|>";
+        assert!(has_stop_suffix(text, recent, Some(&stops)));
+    }
+
+    #[test]
+    fn test_stop_suffix_ignores_non_suffix_match() {
+        let stops = vec!["</s>".to_string()];
+        let text = "prefix </s> middle";
+        assert!(!has_stop_suffix(text, "", Some(&stops)));
+    }
+
+    #[test]
+    fn test_stop_suffix_handles_no_stop_strings() {
+        assert!(!has_stop_suffix("anything", "window", None));
     }
 }
