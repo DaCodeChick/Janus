@@ -1,12 +1,20 @@
 //! Chat server example
 //!
 //! Usage:
-//!   cargo run --example chat_server <model_dir> [--port 8080]
+//!   cargo run --example chat_server <model_path_or_dir> [--port 8080]
 //!
-//! The model directory should contain:
+//! If <model_path_or_dir> is a directory, it should contain:
 //!   - model.gguf or model.safetensors
 //!   - config.json
 //!   - tokenizer.json
+//!
+//! If <model_path_or_dir> is a file, the config.json and tokenizer.json
+//! should be in the same directory.
+//!
+//! Examples:
+//!   cargo run --example chat_server ./models/llama-7b
+//!   cargo run --example chat_server ./models/llama-7b/model.gguf
+//!   cargo run --example chat_server ./models/llama-7b/model-00001-of-00002.safetensors
 //!
 //! Then test with:
 //!   curl http://localhost:8080/v1/chat/completions \
@@ -21,8 +29,8 @@
 //!     }'
 
 use janus_engine::{
-    ChatFormatter, ComputeEngine, GGUFFile, HuggingFaceConfig, Model, ModelConfig,
-    Sampler, SamplerConfig, Tokenizer, TransformerBlock, TransformerBlockConfig,
+    ChatFormatter, ComputeEngine, GGUFLoader, SafetensorsLoader, HuggingFaceConfig, Model, 
+    ModelConfig, Sampler, SamplerConfig, Tokenizer, TransformerBlock, TransformerBlockConfig,
 };
 use janus_server::{create_router, handlers::AppState};
 use std::collections::HashMap;
@@ -111,11 +119,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Parse command line arguments
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 {
-        eprintln!("Usage: {} <model_dir> [--port PORT]", args[0]);
+        eprintln!("Usage: {} <model_path_or_dir> [--port PORT]", args[0]);
+        eprintln!();
+        eprintln!("Examples:");
+        eprintln!("  {} ./models/llama-7b", args[0]);
+        eprintln!("  {} ./models/llama-7b/model.gguf", args[0]);
+        eprintln!("  {} ./models/llama-7b/model-00001-of-00002.safetensors", args[0]);
         std::process::exit(1);
     }
 
-    let model_dir = PathBuf::from(&args[1]);
+    let model_path_or_dir = PathBuf::from(&args[1]);
     let mut port = 8080u16;
 
     // Parse optional --port argument
@@ -129,18 +142,40 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    // Determine model file paths
-    let model_path = model_dir
-        .join("model.gguf")
-        .exists()
-        .then(|| model_dir.join("model.gguf"))
-        .or_else(|| {
-            model_dir
-                .join("model.safetensors")
-                .exists()
-                .then(|| model_dir.join("model.safetensors"))
-        })
-        .ok_or("No model file found (model.gguf or model.safetensors)")?;
+    // Determine model file and directory paths
+    let (model_path, model_dir) = if model_path_or_dir.is_file() {
+        // User specified a direct file path
+        let model_dir = model_path_or_dir
+            .parent()
+            .ok_or("Model file has no parent directory")?
+            .to_path_buf();
+        (model_path_or_dir, model_dir)
+    } else if model_path_or_dir.is_dir() {
+        // User specified a directory - find model.gguf or model.safetensors
+        let model_file = model_path_or_dir
+            .join("model.gguf")
+            .exists()
+            .then(|| model_path_or_dir.join("model.gguf"))
+            .or_else(|| {
+                model_path_or_dir
+                    .join("model.safetensors")
+                    .exists()
+                    .then(|| model_path_or_dir.join("model.safetensors"))
+            })
+            .ok_or_else(|| {
+                format!(
+                    "No model file found in directory {:?}. Looking for model.gguf or model.safetensors",
+                    model_path_or_dir
+                )
+            })?;
+        (model_file, model_path_or_dir)
+    } else {
+        return Err(format!(
+            "Model path {:?} does not exist or is not a file/directory",
+            model_path_or_dir
+        )
+        .into());
+    };
 
     let config_path = model_dir.join("config.json");
     let tokenizer_path = model_dir.join("tokenizer.json");
@@ -156,8 +191,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing::info!("Using GPU: {} ({:?})", device_info.name, device_info.backend);
 
     // Load model file
-    let model_loader = GGUFFile::from_file(&model_path)?;
-    let tensors = engine.allocate_tensors(&model_loader)?;
+    let tensors = if model_path.extension().and_then(|s| s.to_str()) == Some("gguf") {
+        tracing::info!("Loading GGUF model from {:?}", model_path);
+        let model_loader = GGUFLoader::from_file(&model_path)?;
+        engine.allocate_tensors(&model_loader)?
+    } else if model_path
+        .extension()
+        .and_then(|s| s.to_str())
+        .map(|s| s == "safetensors")
+        .unwrap_or(false)
+    {
+        tracing::info!("Loading Safetensors model from {:?}", model_path);
+        let model_loader = SafetensorsLoader::from_file(&model_path)?;
+        engine.allocate_tensors(&model_loader)?
+    } else {
+        return Err(format!(
+            "Unsupported model file extension. Expected .gguf or .safetensors, got {:?}",
+            model_path.extension()
+        )
+        .into());
+    };
 
     // Load config
     let hf_config = HuggingFaceConfig::from_file(&config_path)?;
