@@ -64,7 +64,6 @@ pub fn rmsnorm(
     epsilon: f32,
 ) -> Result<()> {
     let device = engine.device();
-    let shader = &pipeline_cache.rmsnorm_shader;
 
     // Create uniforms buffer
     let uniforms = RmsNormUniforms {
@@ -79,61 +78,10 @@ pub fn rmsnorm(
         usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
     });
 
-    // Create bind group layout
-    let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-        label: Some("rmsnorm_bind_group_layout"),
-        entries: &[
-            // Input (storage, read-only)
-            wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::COMPUTE,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Storage { read_only: true },
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            },
-            // Output (storage, read-write)
-            wgpu::BindGroupLayoutEntry {
-                binding: 1,
-                visibility: wgpu::ShaderStages::COMPUTE,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Storage { read_only: false },
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            },
-            // Gamma weights (storage, read-only)
-            wgpu::BindGroupLayoutEntry {
-                binding: 2,
-                visibility: wgpu::ShaderStages::COMPUTE,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Storage { read_only: true },
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            },
-            // Uniforms
-            wgpu::BindGroupLayoutEntry {
-                binding: 3,
-                visibility: wgpu::ShaderStages::COMPUTE,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            },
-        ],
-    });
-
-    // Create bind group
+    // Create bind group using cached layout
     let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("rmsnorm_bind_group"),
-        layout: &bind_group_layout,
+        layout: &pipeline_cache.rmsnorm_layout,
         entries: &[
             wgpu::BindGroupEntry {
                 binding: 0,
@@ -154,30 +102,14 @@ pub fn rmsnorm(
         ],
     });
 
-    // Create compute pipeline
-    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-        label: Some("rmsnorm_pipeline_layout"),
-        bind_group_layouts: &[Some(&bind_group_layout)],
-        immediate_size: Default::default(),
-    });
-
-    let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-        label: Some("rmsnorm_pipeline"),
-        layout: Some(&pipeline_layout),
-        module: &shader,
-        entry_point: Some("rmsnorm"),
-        compilation_options: Default::default(),
-        cache: None,
-    });
-
-    // Record compute pass
+    // Record compute pass using cached pipeline
     {
         let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: Some("rmsnorm_pass"),
             timestamp_writes: None,
         });
 
-        compute_pass.set_pipeline(&pipeline);
+        compute_pass.set_pipeline(&pipeline_cache.rmsnorm_pipeline);
         compute_pass.set_bind_group(0, &bind_group, &[]);
 
         // Each workgroup processes one sequence (batch_size workgroups)
@@ -208,7 +140,6 @@ pub fn silu(
     size: u32,
 ) -> Result<()> {
     let device = engine.device();
-    let shader = &pipeline_cache.silu_shader;
 
     // Create uniforms buffer
     let uniforms = SiluUniforms {
@@ -223,50 +154,10 @@ pub fn silu(
         usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
     });
 
-    // Create bind group layout
-    let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-        label: Some("silu_bind_group_layout"),
-        entries: &[
-            // Input (storage, read-only)
-            wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::COMPUTE,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Storage { read_only: true },
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            },
-            // Output (storage, read-write)
-            wgpu::BindGroupLayoutEntry {
-                binding: 1,
-                visibility: wgpu::ShaderStages::COMPUTE,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Storage { read_only: false },
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            },
-            // Uniforms
-            wgpu::BindGroupLayoutEntry {
-                binding: 2,
-                visibility: wgpu::ShaderStages::COMPUTE,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            },
-        ],
-    });
-
-    // Create bind group
+    // Create bind group using cached layout
     let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("silu_bind_group"),
-        layout: &bind_group_layout,
+        layout: &pipeline_cache.silu_layout,
         entries: &[
             wgpu::BindGroupEntry {
                 binding: 0,
@@ -283,30 +174,14 @@ pub fn silu(
         ],
     });
 
-    // Create compute pipeline
-    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-        label: Some("silu_pipeline_layout"),
-        bind_group_layouts: &[Some(&bind_group_layout)],
-        immediate_size: Default::default(),
-    });
-
-    let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-        label: Some("silu_pipeline"),
-        layout: Some(&pipeline_layout),
-        module: &shader,
-        entry_point: Some("silu"),
-        compilation_options: Default::default(),
-        cache: None,
-    });
-
-    // Record compute pass
+    // Record compute pass using cached pipeline
     {
         let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: Some("silu_pass"),
             timestamp_writes: None,
         });
 
-        compute_pass.set_pipeline(&pipeline);
+        compute_pass.set_pipeline(&pipeline_cache.silu_pipeline);
         compute_pass.set_bind_group(0, &bind_group, &[]);
 
         // Calculate workgroup dispatch size (256 threads per workgroup)

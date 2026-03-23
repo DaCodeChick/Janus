@@ -57,9 +57,6 @@ pub fn rope(
 ) -> Result<()> {
     let device = engine.device();
 
-    // Use cached shader module
-    let shader = &pipeline_cache.rope_shader;
-
     let uniforms = RopeUniforms {
         batch_size,
         num_heads,
@@ -72,55 +69,9 @@ pub fn rope(
         usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
     });
 
-    let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-        label: Some("rope_bind_group_layout"),
-        entries: &[
-            wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::COMPUTE,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Storage { read_only: true },
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            },
-            wgpu::BindGroupLayoutEntry {
-                binding: 1,
-                visibility: wgpu::ShaderStages::COMPUTE,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Storage { read_only: false },
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            },
-            wgpu::BindGroupLayoutEntry {
-                binding: 2,
-                visibility: wgpu::ShaderStages::COMPUTE,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            },
-            wgpu::BindGroupLayoutEntry {
-                binding: 3,
-                visibility: wgpu::ShaderStages::COMPUTE,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Storage { read_only: true },
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            },
-        ],
-    });
-
     let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("rope_bind_group"),
-        layout: &bind_group_layout,
+        layout: &pipeline_cache.rope_layout,
         entries: &[
             wgpu::BindGroupEntry {
                 binding: 0,
@@ -141,21 +92,6 @@ pub fn rope(
         ],
     });
 
-    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-        label: Some("rope_pipeline_layout"),
-        bind_group_layouts: &[Some(&bind_group_layout)],
-        immediate_size: Default::default(),
-    });
-
-    let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-        label: Some("rope_pipeline"),
-        layout: Some(&pipeline_layout),
-        module: shader,
-        entry_point: Some("main"),
-        compilation_options: Default::default(),
-        cache: None,
-    });
-
     // Record compute pass to encoder
     {
         let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
@@ -163,7 +99,7 @@ pub fn rope(
             timestamp_writes: None,
         });
 
-        compute_pass.set_pipeline(&pipeline);
+        compute_pass.set_pipeline(&pipeline_cache.rope_pipeline);
         compute_pass.set_bind_group(0, &bind_group, &[]);
 
         // Calculate workgroup count (256 threads per workgroup)

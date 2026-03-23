@@ -2,6 +2,7 @@
 
 use crate::compute::engine::ComputeEngine;
 use crate::compute::ops::{gemm_q5_k, gemm_q8_0, Q5K_BLOCK_BYTES, Q5K_BLOCK_SIZE, Q8_0_BLOCK_BYTES, Q8_0_BLOCK_SIZE};
+use crate::compute::pipeline_cache::PipelineCache;
 
 #[tokio::test]
 async fn test_q5k_shader_compiles() {
@@ -16,6 +17,9 @@ async fn test_q5k_shader_compiles() {
     };
 
     println!("GPU initialized for Q5_K test: {:?}", engine.adapter_info().name);
+
+    // Create pipeline cache
+    let pipeline_cache = PipelineCache::new(engine.device());
 
     // Create dummy Q5_K data (1 block = 256 elements = 176 bytes)
     let rows = 2u32;
@@ -43,7 +47,7 @@ async fn test_q5k_shader_compiles() {
     engine.queue().write_buffer(&vector_buffer, 0, bytemuck::cast_slice(&vector_data));
     
     // Run Q5_K GEMM
-    let result = gemm_q5_k(&engine, &matrix_buffer, &vector_buffer, rows, cols).await;
+    let result = gemm_q5_k(&engine, &pipeline_cache, &matrix_buffer, &vector_buffer, rows, cols).await;
     
     assert!(result.is_ok(), "Q5_K GEMM should compile and run successfully");
     println!("Q5_K shader compiled and executed successfully!");
@@ -68,6 +72,9 @@ async fn test_q8_0_shader_compiles() {
     };
 
     println!("GPU initialized for Q8_0 test: {:?}", engine.adapter_info().name);
+
+    // Create pipeline cache
+    let pipeline_cache = PipelineCache::new(engine.device());
 
     // Create dummy Q8_0 data (1 block = 32 elements = 34 bytes, padded to 36 bytes for u32 alignment)
     let rows = 4u32;
@@ -95,7 +102,7 @@ async fn test_q8_0_shader_compiles() {
     engine.queue().write_buffer(&vector_buffer, 0, bytemuck::cast_slice(&vector_data));
     
     // Run Q8_0 GEMM
-    let result = gemm_q8_0(&engine, &matrix_buffer, &vector_buffer, rows, cols).await;
+    let result = gemm_q8_0(&engine, &pipeline_cache, &matrix_buffer, &vector_buffer, rows, cols).await;
     
     assert!(result.is_ok(), "Q8_0 GEMM should compile and run successfully");
     println!("Q8_0 shader compiled and executed successfully!");

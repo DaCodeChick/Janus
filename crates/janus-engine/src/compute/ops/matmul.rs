@@ -238,7 +238,6 @@ pub fn gemm(
     n: u32,
 ) -> Result<()> {
     let device = engine.device();
-    let shader = &pipeline_cache.gemm_shader;
 
     // Create uniforms buffer
     let uniforms = GemmUniforms {
@@ -254,61 +253,10 @@ pub fn gemm(
         usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
     });
 
-    // Create bind group layout
-    let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-        label: Some("gemm_bind_group_layout"),
-        entries: &[
-            // Matrix A (storage, read-only)
-            wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::COMPUTE,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Storage { read_only: true },
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            },
-            // Matrix B (storage, read-only)
-            wgpu::BindGroupLayoutEntry {
-                binding: 1,
-                visibility: wgpu::ShaderStages::COMPUTE,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Storage { read_only: true },
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            },
-            // Output (storage, read-write)
-            wgpu::BindGroupLayoutEntry {
-                binding: 2,
-                visibility: wgpu::ShaderStages::COMPUTE,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Storage { read_only: false },
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            },
-            // Uniforms
-            wgpu::BindGroupLayoutEntry {
-                binding: 3,
-                visibility: wgpu::ShaderStages::COMPUTE,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            },
-        ],
-    });
-
-    // Create bind group
+    // Create bind group using cached layout
     let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("gemm_bind_group"),
-        layout: &bind_group_layout,
+        layout: &pipeline_cache.gemm_layout,
         entries: &[
             wgpu::BindGroupEntry {
                 binding: 0,
@@ -329,30 +277,14 @@ pub fn gemm(
         ],
     });
 
-    // Create compute pipeline
-    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-        label: Some("gemm_pipeline_layout"),
-        bind_group_layouts: &[Some(&bind_group_layout)],
-        immediate_size: Default::default(),
-    });
-
-    let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-        label: Some("gemm_pipeline"),
-        layout: Some(&pipeline_layout),
-        module: &shader,
-        entry_point: Some("main"),
-        compilation_options: Default::default(),
-        cache: None,
-    });
-
-    // Record compute pass
+    // Record compute pass using cached pipeline
     {
         let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: Some("gemm_pass"),
             timestamp_writes: None,
         });
 
-        compute_pass.set_pipeline(&pipeline);
+        compute_pass.set_pipeline(&pipeline_cache.gemm_pipeline);
         compute_pass.set_bind_group(0, &bind_group, &[]);
 
         // Calculate workgroup dispatch size (16x16 workgroups per batch item)

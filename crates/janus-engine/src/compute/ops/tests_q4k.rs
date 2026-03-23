@@ -2,6 +2,7 @@
 
 use crate::compute::engine::ComputeEngine;
 use crate::compute::ops::{gemm_q4_k, Q4K_BLOCK_BYTES, Q4K_BLOCK_SIZE};
+use crate::compute::pipeline_cache::PipelineCache;
 use wgpu::util::DeviceExt;
 
 #[tokio::test]
@@ -16,6 +17,9 @@ async fn test_q4k_shader_compilation() {
     };
 
     println!("GPU initialized for Q4_K test: {:?}", engine.adapter_info().name);
+
+    // Create pipeline cache
+    let pipeline_cache = PipelineCache::new(engine.device());
 
     // Create dummy Q4_K data (1 block = 256 elements = 144 bytes)
     let num_blocks = 1;
@@ -39,7 +43,7 @@ async fn test_q4k_shader_compilation() {
     });
 
     // Run Q4_K GEMM
-    let result = gemm_q4_k(&engine, &matrix_buffer, &vector_buffer, rows, cols).await;
+    let result = gemm_q4_k(&engine, &pipeline_cache, &matrix_buffer, &vector_buffer, rows, cols).await;
 
     assert!(result.is_ok(), "Q4_K GEMM should compile and run successfully");
     println!("Q4_K shader compiled and executed successfully!");

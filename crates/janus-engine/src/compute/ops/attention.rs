@@ -94,10 +94,6 @@ pub fn compute_attention(
     let device = engine.device();
     let scale = 1.0 / (head_dim as f32).sqrt();
 
-    // Use cached shaders
-    let attention_shader = &pipeline_cache.attention_shader;
-    let softmax_shader = &pipeline_cache.softmax_shader;
-
     // Create uniforms
     let attention_uniforms = AttentionUniforms {
         batch_size,
@@ -129,55 +125,9 @@ pub fn compute_attention(
     });
 
     // === Step 1: QK scores ===
-    let qk_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-        label: Some("qk_bind_group_layout"),
-        entries: &[
-            wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::COMPUTE,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Storage { read_only: true },
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            },
-            wgpu::BindGroupLayoutEntry {
-                binding: 1,
-                visibility: wgpu::ShaderStages::COMPUTE,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Storage { read_only: true },
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            },
-            wgpu::BindGroupLayoutEntry {
-                binding: 2,
-                visibility: wgpu::ShaderStages::COMPUTE,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Storage { read_only: false },
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            },
-            wgpu::BindGroupLayoutEntry {
-                binding: 3,
-                visibility: wgpu::ShaderStages::COMPUTE,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            },
-        ],
-    });
-
     let qk_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("qk_bind_group"),
-        layout: &qk_bind_group_layout,
+        layout: &pipeline_cache.attention_qk_layout,
         entries: &[
             wgpu::BindGroupEntry {
                 binding: 0,
@@ -197,60 +147,11 @@ pub fn compute_attention(
             },
         ],
     });
-    let qk_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-        label: Some("qk_pipeline_layout"),
-        bind_group_layouts: &[Some(&qk_bind_group_layout)],
-        immediate_size: Default::default(),
-    });
-    let qk_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-        label: Some("qk_pipeline"),
-        layout: Some(&qk_pipeline_layout),
-        module: &attention_shader,
-        entry_point: Some("compute_qk_scores"),
-        compilation_options: Default::default(),
-        cache: None,
-    });
 
     // === Step 2: Softmax ===
-    let softmax_bind_group_layout =
-        device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("softmax_bind_group_layout"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: true },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: false },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 2,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-            ],
-        });
     let softmax_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("softmax_bind_group"),
-        layout: &softmax_bind_group_layout,
+        layout: &pipeline_cache.attention_softmax_layout,
         entries: &[
             wgpu::BindGroupEntry {
                 binding: 0,
@@ -266,70 +167,11 @@ pub fn compute_attention(
             },
         ],
     });
-    let softmax_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-        label: Some("softmax_pipeline_layout"),
-        bind_group_layouts: &[Some(&softmax_bind_group_layout)],
-        immediate_size: Default::default(),
-    });
-    let softmax_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-        label: Some("softmax_pipeline"),
-        layout: Some(&softmax_pipeline_layout),
-        module: &softmax_shader,
-        entry_point: Some("main"),
-        compilation_options: Default::default(),
-        cache: None,
-    });
 
     // === Step 3: Apply attention ===
-    let apply_bind_group_layout =
-        device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("apply_bind_group_layout"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: true },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: true },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 2,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: false },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 3,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-            ],
-        });
     let apply_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("apply_bind_group"),
-        layout: &apply_bind_group_layout,
+        layout: &pipeline_cache.attention_apply_layout,
         entries: &[
             wgpu::BindGroupEntry {
                 binding: 0,
@@ -349,19 +191,6 @@ pub fn compute_attention(
             },
         ],
     });
-    let apply_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-        label: Some("apply_pipeline_layout"),
-        bind_group_layouts: &[Some(&apply_bind_group_layout)],
-        immediate_size: Default::default(),
-    });
-    let apply_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-        label: Some("apply_pipeline"),
-        layout: Some(&apply_pipeline_layout),
-        module: &attention_shader,
-        entry_point: Some("apply_attention"),
-        compilation_options: Default::default(),
-        cache: None,
-    });
 
     // Record all three passes
     {
@@ -369,7 +198,7 @@ pub fn compute_attention(
             label: Some("qk_pass"),
             timestamp_writes: None,
         });
-        compute_pass.set_pipeline(&qk_pipeline);
+        compute_pass.set_pipeline(&pipeline_cache.attention_qk_pipeline);
         compute_pass.set_bind_group(0, &qk_bind_group, &[]);
         // Dispatch batch_size * num_heads workgroups (one per batch item per head)
         compute_pass.dispatch_workgroups(batch_size * num_heads, 1, 1);
@@ -379,7 +208,7 @@ pub fn compute_attention(
             label: Some("softmax_pass"),
             timestamp_writes: None,
         });
-        compute_pass.set_pipeline(&softmax_pipeline);
+        compute_pass.set_pipeline(&pipeline_cache.attention_softmax_pipeline);
         compute_pass.set_bind_group(0, &softmax_bind_group, &[]);
         // Dispatch batch_size * num_heads workgroups (one softmax per batch item per head)
         compute_pass.dispatch_workgroups(batch_size * num_heads, 1, 1);
@@ -389,7 +218,7 @@ pub fn compute_attention(
             label: Some("apply_pass"),
             timestamp_writes: None,
         });
-        compute_pass.set_pipeline(&apply_pipeline);
+        compute_pass.set_pipeline(&pipeline_cache.attention_apply_pipeline);
         compute_pass.set_bind_group(0, &apply_bind_group, &[]);
         // Total elements: batch_size * num_heads * head_dim
         let total_elements = batch_size * num_heads * head_dim;

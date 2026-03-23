@@ -7,6 +7,7 @@
 
 use crate::compute::engine::ComputeEngine;
 use crate::compute::error::Result;
+use crate::compute::pipeline_cache::PipelineCache;
 use wgpu::util::DeviceExt;
 
 /// Uniforms structure for Q4_K matrix-vector multiplication
@@ -73,6 +74,7 @@ pub const Q8_0_BLOCK_BYTES: usize = 34;
 /// Uses the WGSL shader at `shaders/gemm_q4_k.wgsl` for on-the-fly dequantization and compute.
 pub async fn gemm_q4_k(
     engine: &ComputeEngine,
+    pipeline_cache: &PipelineCache,
     matrix_q4k: &wgpu::Buffer,
     vector: &wgpu::Buffer,
     rows: u32,
@@ -87,13 +89,6 @@ pub async fn gemm_q4_k(
 
     let device = engine.device();
     let queue = engine.queue();
-
-    // Load the shader
-    let shader_source = include_str!("../shaders/gemm_q4_k.wgsl");
-    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some("gemm_q4_k_shader"),
-        source: wgpu::ShaderSource::Wgsl(shader_source.into()),
-    });
 
     // Create output buffer
     let output_size = (rows * std::mem::size_of::<f32>() as u32) as u64;
@@ -118,61 +113,10 @@ pub async fn gemm_q4_k(
         usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
     });
 
-    // Create bind group layout
-    let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-        label: Some("gemm_q4_k_bind_group_layout"),
-        entries: &[
-            // Quantized matrix A (storage, read-only)
-            wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::COMPUTE,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Storage { read_only: true },
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            },
-            // Vector B (storage, read-only)
-            wgpu::BindGroupLayoutEntry {
-                binding: 1,
-                visibility: wgpu::ShaderStages::COMPUTE,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Storage { read_only: true },
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            },
-            // Output vector C (storage, read-write)
-            wgpu::BindGroupLayoutEntry {
-                binding: 2,
-                visibility: wgpu::ShaderStages::COMPUTE,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Storage { read_only: false },
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            },
-            // Uniforms (uniform buffer)
-            wgpu::BindGroupLayoutEntry {
-                binding: 3,
-                visibility: wgpu::ShaderStages::COMPUTE,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            },
-        ],
-    });
-
     // Create bind group
     let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("gemm_q4_k_bind_group"),
-        layout: &bind_group_layout,
+        layout: &pipeline_cache.gemm_q4_k_layout,
         entries: &[
             wgpu::BindGroupEntry {
                 binding: 0,
@@ -193,23 +137,6 @@ pub async fn gemm_q4_k(
         ],
     });
 
-    // Create pipeline layout
-    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-        label: Some("gemm_q4_k_pipeline_layout"),
-        bind_group_layouts: &[Some(&bind_group_layout)],
-        immediate_size: Default::default(),
-    });
-
-    // Create compute pipeline
-    let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-        label: Some("gemm_q4_k_pipeline"),
-        layout: Some(&pipeline_layout),
-        module: &shader,
-        entry_point: Some("main"),
-        compilation_options: Default::default(),
-        cache: None,
-    });
-
     // Create command encoder
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
         label: Some("gemm_q4_k_encoder"),
@@ -223,7 +150,7 @@ pub async fn gemm_q4_k(
             label: Some("gemm_q4_k_pass"),
             timestamp_writes: None,
         });
-        compute_pass.set_pipeline(&pipeline);
+        compute_pass.set_pipeline(&pipeline_cache.gemm_q4_k_pipeline);
         compute_pass.set_bind_group(0, &bind_group, &[]);
         compute_pass.dispatch_workgroups(num_workgroups, 1, 1);
     }
@@ -264,6 +191,7 @@ struct Q5KUniforms {
 /// Uses the WGSL shader at `shaders/gemm_q5_k.wgsl` for on-the-fly dequantization and compute.
 pub async fn gemm_q5_k(
     engine: &ComputeEngine,
+    pipeline_cache: &PipelineCache,
     matrix_q5k: &wgpu::Buffer,
     vector: &wgpu::Buffer,
     rows: u32,
@@ -278,13 +206,6 @@ pub async fn gemm_q5_k(
 
     let device = engine.device();
     let queue = engine.queue();
-
-    // Load the shader
-    let shader_source = include_str!("../shaders/gemm_q5_k.wgsl");
-    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some("gemm_q5_k_shader"),
-        source: wgpu::ShaderSource::Wgsl(shader_source.into()),
-    });
 
     // Create output buffer
     let output_size = (rows * std::mem::size_of::<f32>() as u32) as u64;
@@ -309,61 +230,10 @@ pub async fn gemm_q5_k(
         usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
     });
 
-    // Create bind group layout
-    let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-        label: Some("gemm_q5_k_bind_group_layout"),
-        entries: &[
-            // Quantized matrix A (storage, read-only)
-            wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::COMPUTE,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Storage { read_only: true },
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            },
-            // Vector B (storage, read-only)
-            wgpu::BindGroupLayoutEntry {
-                binding: 1,
-                visibility: wgpu::ShaderStages::COMPUTE,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Storage { read_only: true },
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            },
-            // Output vector C (storage, read-write)
-            wgpu::BindGroupLayoutEntry {
-                binding: 2,
-                visibility: wgpu::ShaderStages::COMPUTE,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Storage { read_only: false },
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            },
-            // Uniforms (uniform buffer)
-            wgpu::BindGroupLayoutEntry {
-                binding: 3,
-                visibility: wgpu::ShaderStages::COMPUTE,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            },
-        ],
-    });
-
     // Create bind group
     let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("gemm_q5_k_bind_group"),
-        layout: &bind_group_layout,
+        layout: &pipeline_cache.gemm_q5_k_layout,
         entries: &[
             wgpu::BindGroupEntry {
                 binding: 0,
@@ -384,23 +254,6 @@ pub async fn gemm_q5_k(
         ],
     });
 
-    // Create pipeline layout
-    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-        label: Some("gemm_q5_k_pipeline_layout"),
-        bind_group_layouts: &[Some(&bind_group_layout)],
-        immediate_size: Default::default(),
-    });
-
-    // Create compute pipeline
-    let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-        label: Some("gemm_q5_k_pipeline"),
-        layout: Some(&pipeline_layout),
-        module: &shader,
-        entry_point: Some("main"),
-        compilation_options: Default::default(),
-        cache: None,
-    });
-
     // Create command encoder
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
         label: Some("gemm_q5_k_encoder"),
@@ -414,7 +267,7 @@ pub async fn gemm_q5_k(
             label: Some("gemm_q5_k_pass"),
             timestamp_writes: None,
         });
-        compute_pass.set_pipeline(&pipeline);
+        compute_pass.set_pipeline(&pipeline_cache.gemm_q5_k_pipeline);
         compute_pass.set_bind_group(0, &bind_group, &[]);
         compute_pass.dispatch_workgroups(num_workgroups, 1, 1);
     }
@@ -455,6 +308,7 @@ struct Q8_0Uniforms {
 /// Uses the WGSL shader at `shaders/gemm_q8_0.wgsl` for on-the-fly dequantization and compute.
 pub async fn gemm_q8_0(
     engine: &ComputeEngine,
+    pipeline_cache: &PipelineCache,
     matrix_q8_0: &wgpu::Buffer,
     vector: &wgpu::Buffer,
     rows: u32,
@@ -469,13 +323,6 @@ pub async fn gemm_q8_0(
 
     let device = engine.device();
     let queue = engine.queue();
-
-    // Load the shader
-    let shader_source = include_str!("../shaders/gemm_q8_0.wgsl");
-    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some("gemm_q8_0_shader"),
-        source: wgpu::ShaderSource::Wgsl(shader_source.into()),
-    });
 
     // Create output buffer
     let output_size = (rows * std::mem::size_of::<f32>() as u32) as u64;
@@ -500,61 +347,10 @@ pub async fn gemm_q8_0(
         usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
     });
 
-    // Create bind group layout
-    let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-        label: Some("gemm_q8_0_bind_group_layout"),
-        entries: &[
-            // Quantized matrix A (storage, read-only)
-            wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::COMPUTE,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Storage { read_only: true },
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            },
-            // Vector B (storage, read-only)
-            wgpu::BindGroupLayoutEntry {
-                binding: 1,
-                visibility: wgpu::ShaderStages::COMPUTE,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Storage { read_only: true },
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            },
-            // Output vector C (storage, read-write)
-            wgpu::BindGroupLayoutEntry {
-                binding: 2,
-                visibility: wgpu::ShaderStages::COMPUTE,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Storage { read_only: false },
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            },
-            // Uniforms (uniform buffer)
-            wgpu::BindGroupLayoutEntry {
-                binding: 3,
-                visibility: wgpu::ShaderStages::COMPUTE,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            },
-        ],
-    });
-
     // Create bind group
     let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("gemm_q8_0_bind_group"),
-        layout: &bind_group_layout,
+        layout: &pipeline_cache.gemm_q8_0_layout,
         entries: &[
             wgpu::BindGroupEntry {
                 binding: 0,
@@ -575,23 +371,6 @@ pub async fn gemm_q8_0(
         ],
     });
 
-    // Create pipeline layout
-    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-        label: Some("gemm_q8_0_pipeline_layout"),
-        bind_group_layouts: &[Some(&bind_group_layout)],
-        immediate_size: Default::default(),
-    });
-
-    // Create compute pipeline
-    let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-        label: Some("gemm_q8_0_pipeline"),
-        layout: Some(&pipeline_layout),
-        module: &shader,
-        entry_point: Some("main"),
-        compilation_options: Default::default(),
-        cache: None,
-    });
-
     // Create command encoder
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
         label: Some("gemm_q8_0_encoder"),
@@ -605,7 +384,7 @@ pub async fn gemm_q8_0(
             label: Some("gemm_q8_0_pass"),
             timestamp_writes: None,
         });
-        compute_pass.set_pipeline(&pipeline);
+        compute_pass.set_pipeline(&pipeline_cache.gemm_q8_0_pipeline);
         compute_pass.set_bind_group(0, &bind_group, &[]);
         compute_pass.dispatch_workgroups(num_workgroups, 1, 1);
     }
