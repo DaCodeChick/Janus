@@ -16,7 +16,9 @@
 //!   cargo run --example chat_server ./models/llama-7b/model.gguf
 //!   cargo run --example chat_server ./models/llama-7b/model-00001-of-00002.safetensors
 //!
-//! Then test with:
+//! Once running, visit http://localhost:8080 in your browser for API documentation
+//! and examples, or test directly with curl:
+//!
 //!   curl http://localhost:8080/v1/chat/completions \
 //!     -H "Content-Type: application/json" \
 //!     -d '{
@@ -299,7 +301,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Start server
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
     tracing::info!("Starting server on http://{}", addr);
+    tracing::info!("Open http://{} in your browser for API documentation", addr);
     tracing::info!("Chat endpoint: http://{}/v1/chat/completions", addr);
+    tracing::info!("Health check: http://{}/health", addr);
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app).await?;
