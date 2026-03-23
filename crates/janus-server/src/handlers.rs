@@ -108,7 +108,7 @@ impl ChatCompletionHandler {
             .generate_with_callback(
                 &prompt,
                 max_tokens,
-                Some(&stop_strings),
+                None,
                 None::<fn(&str) -> bool>,
             )
             .await

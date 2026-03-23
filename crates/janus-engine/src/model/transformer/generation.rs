@@ -284,6 +284,7 @@ impl Model {
         tracing::info!("Generation phase: generating up to {} tokens", max_tokens);
         let mut generated_tokens = Vec::new();
         let mut printed_len = 0;
+        let needs_incremental_text = stop_strings.is_some() || callback.is_some();
 
         // High-precision benchmark timing
         let generation_start = std::time::Instant::now();
@@ -336,37 +337,41 @@ impl Model {
             // Add token to generated sequence
             generated_tokens.push(next_token);
 
-            // Decode entire sequence to get the latest text
-            let full_text = self
-                .tokenizer
-                .decode_batch(&generated_tokens)
-                .map_err(|e| crate::compute::ComputeError::Other(format!("Detokenization failed: {}", e)))?;
+            if needs_incremental_text {
+                // Decode only when text-based stop/callback processing is needed
+                let full_text = self.tokenizer.decode_batch(&generated_tokens).map_err(|e| {
+                    crate::compute::ComputeError::Other(format!("Detokenization failed: {}", e))
+                })?;
 
-            // Check for stop strings in the generated text
-            if let Some(stop_strs) = stop_strings {
-                let mut should_stop = false;
-                for stop_str in stop_strs {
-                    if full_text.contains(stop_str) {
-                        tracing::info!("Stop string '{}' detected, stopping generation", stop_str);
-                        should_stop = true;
+                // Check for stop strings in the generated text
+                if let Some(stop_strs) = stop_strings {
+                    let mut should_stop = false;
+                    for stop_str in stop_strs {
+                        if full_text.contains(stop_str) {
+                            tracing::info!(
+                                "Stop string '{}' detected, stopping generation",
+                                stop_str
+                            );
+                            should_stop = true;
+                            break;
+                        }
+                    }
+                    if should_stop {
                         break;
                     }
                 }
-                if should_stop {
-                    break;
-                }
-            }
 
-            // Stream only the newly generated text via callback
-            if full_text.len() > printed_len {
-                let new_text = &full_text[printed_len..];
-                if let Some(ref mut cb) = callback {
-                    if !cb(new_text) {
-                        tracing::info!("Callback requested stop");
-                        break;
+                // Stream only the newly generated text via callback
+                if full_text.len() > printed_len {
+                    let new_text = &full_text[printed_len..];
+                    if let Some(ref mut cb) = callback {
+                        if !cb(new_text) {
+                            tracing::info!("Callback requested stop");
+                            break;
+                        }
                     }
+                    printed_len = full_text.len();
                 }
-                printed_len = full_text.len();
             }
 
             // Update for next iteration
