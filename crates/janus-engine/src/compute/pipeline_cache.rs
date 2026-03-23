@@ -205,14 +205,14 @@ impl PipelineCache {
             Self::create_pipeline(device, "silu_pipeline", &silu_layout, &silu_shader, "silu");
 
         let gemm_pipeline =
-            Self::create_pipeline(device, "gemm_pipeline", &gemm_layout, &gemm_shader, "gemm");
+            Self::create_pipeline(device, "gemm_pipeline", &gemm_layout, &gemm_shader, "main");
 
         let matmul_pipeline = Self::create_pipeline(
             device,
             "matmul_pipeline",
             &matmul_layout,
             &matmul_shader,
-            "matmul",
+            "main",
         );
 
         let add_tensors_pipeline = Self::create_pipeline(
@@ -220,7 +220,7 @@ impl PipelineCache {
             "add_tensors_pipeline",
             &add_tensors_layout,
             &add_tensors_shader,
-            "add_tensors",
+            "main",
         );
 
         let elementwise_mul_pipeline = Self::create_pipeline(
@@ -228,18 +228,18 @@ impl PipelineCache {
             "elementwise_mul_pipeline",
             &elementwise_mul_layout,
             &elementwise_mul_shader,
-            "elementwise_mul",
+            "main",
         );
 
         let rope_pipeline =
-            Self::create_pipeline(device, "rope_pipeline", &rope_layout, &rope_shader, "rope");
+            Self::create_pipeline(device, "rope_pipeline", &rope_layout, &rope_shader, "main");
 
         let attention_qk_pipeline = Self::create_pipeline(
             device,
             "attention_qk_pipeline",
             &attention_qk_layout,
             &attention_shader,
-            "compute_qk",
+            "compute_qk_scores",
         );
 
         let attention_softmax_pipeline = Self::create_pipeline(
@@ -247,7 +247,7 @@ impl PipelineCache {
             "attention_softmax_pipeline",
             &attention_softmax_layout,
             &softmax_shader,
-            "softmax",
+            "main",
         );
 
         let attention_apply_pipeline = Self::create_pipeline(
