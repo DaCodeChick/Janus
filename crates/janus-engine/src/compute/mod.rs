@@ -11,7 +11,7 @@ pub mod pipeline_cache;
 
 pub use backend::{ComputeBackend, DeviceInfo};
 pub use buffer::{Buffer, BufferUsage};
-pub use cache::KVCache;
+pub use cache::{CacheCompressionConfig, KVCache};
 pub use engine::ComputeEngine;
 pub use error::{ComputeError, Result};
 pub use kernels::Kernels;
