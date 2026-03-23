@@ -171,46 +171,132 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config_path = model_dir.join("config.json");
     let tokenizer_path = model_dir.join("tokenizer.json");
 
-    tracing::info!("Loading model from {:?}", model_path);
-    tracing::info!("Loading config from {:?}", config_path);
-    tracing::info!("Loading tokenizer from {:?}", tokenizer_path);
+    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    println!("🔧 Janus Chat Server Initialization");
+    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    println!();
+    
+    println!("📂 Loading model from: {:?}", model_path);
+    println!("⚙️  Loading config from: {:?}", config_path);
+    println!("🔤 Loading tokenizer from: {:?}", tokenizer_path);
+    println!();
 
     // Initialize compute engine
-    tracing::info!("Initializing GPU compute engine...");
-    let engine = ComputeEngine::new().await?;
+    println!("🎮 Initializing GPU compute engine...");
+    let engine = match ComputeEngine::new().await {
+        Ok(e) => {
+            println!("✅ GPU compute engine initialized successfully");
+            e
+        }
+        Err(e) => {
+            eprintln!("❌ Failed to initialize GPU compute engine: {}", e);
+            return Err(e.into());
+        }
+    };
+    
     let device_info = engine.adapter_info();
-    tracing::info!("Using GPU: {} ({:?})", device_info.name, device_info.backend);
+    println!("🖥️  Using GPU: {} ({:?})", device_info.name, device_info.backend);
+    println!();
 
     // Load model file
+    println!("📥 Loading model weights...");
     let tensors = if model_path.extension().and_then(|s| s.to_str()) == Some("gguf") {
-        tracing::info!("Loading GGUF model from {:?}", model_path);
-        let model_loader = GGUFLoader::from_file(&model_path)?;
-        engine.allocate_tensors(&model_loader)?
+        println!("   Format: GGUF");
+        let model_loader = match GGUFLoader::from_file(&model_path) {
+            Ok(loader) => {
+                println!("✅ GGUF file parsed successfully");
+                loader
+            }
+            Err(e) => {
+                eprintln!("❌ Failed to load GGUF file: {}", e);
+                return Err(e.into());
+            }
+        };
+        
+        println!("🔄 Allocating tensors to GPU memory...");
+        match engine.allocate_tensors(&model_loader) {
+            Ok(t) => {
+                println!("✅ Tensors allocated to GPU ({} tensors)", t.len());
+                t
+            }
+            Err(e) => {
+                eprintln!("❌ Failed to allocate tensors: {}", e);
+                return Err(e.into());
+            }
+        }
     } else if model_path
         .extension()
         .and_then(|s| s.to_str())
         .map(|s| s == "safetensors")
         .unwrap_or(false)
     {
-        tracing::info!("Loading Safetensors model from {:?}", model_path);
-        let model_loader = SafetensorsLoader::from_file(&model_path)?;
-        engine.allocate_tensors(&model_loader)?
+        println!("   Format: Safetensors");
+        let model_loader = match SafetensorsLoader::from_file(&model_path) {
+            Ok(loader) => {
+                println!("✅ Safetensors file parsed successfully");
+                loader
+            }
+            Err(e) => {
+                eprintln!("❌ Failed to load Safetensors file: {}", e);
+                return Err(e.into());
+            }
+        };
+        
+        println!("🔄 Allocating tensors to GPU memory...");
+        match engine.allocate_tensors(&model_loader) {
+            Ok(t) => {
+                println!("✅ Tensors allocated to GPU ({} tensors)", t.len());
+                t
+            }
+            Err(e) => {
+                eprintln!("❌ Failed to allocate tensors: {}", e);
+                return Err(e.into());
+            }
+        }
     } else {
+        eprintln!("❌ Unsupported model file extension. Expected .gguf or .safetensors, got {:?}", model_path.extension());
         return Err(format!(
             "Unsupported model file extension. Expected .gguf or .safetensors, got {:?}",
             model_path.extension()
         )
         .into());
     };
+    println!();
 
     // Load config
-    let hf_config = HuggingFaceConfig::from_file(&config_path)?;
+    println!("⚙️  Loading model configuration...");
+    let hf_config = match HuggingFaceConfig::from_file(&config_path) {
+        Ok(cfg) => {
+            println!("✅ Config loaded successfully");
+            cfg
+        }
+        Err(e) => {
+            eprintln!("❌ Failed to load config: {}", e);
+            return Err(e.into());
+        }
+    };
     let model_config: ModelConfig = (&hf_config).into();
+    println!("   Layers: {}", model_config.num_layers);
+    println!("   Hidden dim: {}", model_config.hidden_dim);
+    println!("   Heads: {}", model_config.num_heads);
+    println!();
 
     // Load tokenizer
-    let tokenizer = Tokenizer::from_file(&tokenizer_path)?;
+    println!("🔤 Loading tokenizer...");
+    let tokenizer = match Tokenizer::from_file(&tokenizer_path) {
+        Ok(tok) => {
+            println!("✅ Tokenizer loaded ({} vocab size)", tok.vocab_size());
+            tok
+        }
+        Err(e) => {
+            eprintln!("❌ Failed to load tokenizer: {}", e);
+            return Err(e.into());
+        }
+    };
+    println!();
 
     // Create sampler with reasonable defaults for chat
+    println!("🎲 Initializing sampler...");
     let sampler_config = SamplerConfig {
         temperature: 0.7,
         top_k: 40,
@@ -220,8 +306,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         max_tokens: 512,
     };
     let sampler = Sampler::new(sampler_config, tokenizer.vocab_size() as u32);
+    println!("✅ Sampler initialized");
+    println!();
 
     // Build transformer blocks
+    println!("🔨 Building transformer blocks...");
     let mut blocks = Vec::new();
     let block_config = TransformerBlockConfig {
         batch_size: model_config.batch_size,
@@ -234,32 +323,55 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     for layer_idx in 0..model_config.num_layers {
-        tracing::info!("Building transformer block {}/{}", layer_idx + 1, model_config.num_layers);
-        let block = build_transformer_block(&block_config, layer_idx, &tensors)?;
+        if layer_idx % 5 == 0 || layer_idx == model_config.num_layers - 1 {
+            println!("   Building block {}/{}", layer_idx + 1, model_config.num_layers);
+        }
+        let block = match build_transformer_block(&block_config, layer_idx, &tensors) {
+            Ok(b) => b,
+            Err(e) => {
+                eprintln!("❌ Failed to build transformer block {}: {}", layer_idx, e);
+                return Err(e);
+            }
+        };
         blocks.push(block);
     }
+    println!("✅ All transformer blocks built successfully");
+    println!();
 
     // Extract embedding and output tensors
+    println!("🔍 Extracting embedding and output tensors...");
     let token_embedding_table = tensors
         .get("token_embd.weight")
         .or_else(|| tensors.get("model.embed_tokens.weight"))
-        .ok_or("Could not find token embedding table")?
+        .ok_or_else(|| {
+            eprintln!("❌ Could not find token embedding table");
+            "Could not find token embedding table"
+        })?
         .clone();
 
     let output_norm_weight = tensors
         .get("output_norm.weight")
         .or_else(|| tensors.get("model.norm.weight"))
-        .ok_or("Could not find output normalization weight")?
+        .ok_or_else(|| {
+            eprintln!("❌ Could not find output normalization weight");
+            "Could not find output normalization weight"
+        })?
         .clone();
 
     let lm_head_weight = tensors
         .get("output.weight")
         .or_else(|| tensors.get("lm_head.weight"))
-        .ok_or("Could not find LM head weight")?
+        .ok_or_else(|| {
+            eprintln!("❌ Could not find LM head weight");
+            "Could not find LM head weight"
+        })?
         .clone();
+    println!("✅ Embedding and output tensors extracted");
+    println!();
 
     // Create model
-    let model = Model::new(
+    println!("🧠 Assembling final model...");
+    let model = match Model::new(
         model_config,
         engine,
         tokenizer,
@@ -268,33 +380,59 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         blocks,
         output_norm_weight,
         lm_head_weight,
-    )?;
+    ) {
+        Ok(m) => {
+            println!("✅ Model assembled successfully");
+            m
+        }
+        Err(e) => {
+            eprintln!("❌ Failed to create model: {}", e);
+            return Err(e.into());
+        }
+    };
+    println!();
 
     // Create chat formatter
+    println!("💬 Setting up chat formatter...");
     let model_name = model_path
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("unknown");
     let chat_formatter = ChatFormatter::from_model_name(model_name);
+    println!("✅ Chat formatter ready (template: {})", model_name);
+    println!();
 
     // Create shared application state
+    println!("🌐 Creating application state...");
     let state = Arc::new(AppState {
         model: Arc::new(Mutex::new(model)),
         chat_formatter,
         model_name: model_name.to_string(),
     });
+    println!("✅ Application state created");
+    println!();
 
     // Create router
+    println!("🛣️  Setting up routes...");
     let app = create_router(state);
+    println!("✅ Routes configured");
+    println!();
 
     // Start server
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
-    tracing::info!("🚀 Starting Janus Chat Server on http://{}", addr);
-    tracing::info!("");
-    tracing::info!("💬 Open the chat UI: http://{}/chat", addr);
-    tracing::info!("📖 API docs: http://{}", addr);
-    tracing::info!("💚 Health check: http://{}/health", addr);
-    tracing::info!("");
+    
+    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    println!("🚀 Janus Chat Server Started!");
+    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    println!();
+    println!("💬 Chat UI:      http://{}/chat", addr);
+    println!("📖 API Docs:     http://{}", addr);
+    println!("💚 Health Check: http://{}/health", addr);
+    println!();
+    println!("Server listening on {}", addr);
+    println!("Press Ctrl+C to stop");
+    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    println!();
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app).await?;

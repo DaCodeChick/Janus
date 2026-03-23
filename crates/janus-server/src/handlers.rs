@@ -33,8 +33,15 @@ impl ChatCompletionHandler {
         State(state): State<Arc<AppState>>,
         Json(request): Json<ChatCompletionRequest>,
     ) -> Response {
+        println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+        println!("📨 Received chat completion request");
+        println!("   Messages: {}", request.messages.len());
+        println!("   Streaming: {}", request.stream);
+        println!("   Max tokens: {:?}", request.max_tokens);
+        
         // Validate request
         if request.messages.is_empty() {
+            println!("❌ Validation failed: messages array is empty");
             return Self::error_response(
                 StatusCode::BAD_REQUEST,
                 "messages array cannot be empty".to_string(),
@@ -42,6 +49,7 @@ impl ChatCompletionHandler {
         }
 
         if request.n != 1 {
+            println!("❌ Validation failed: n={} (only n=1 supported)", request.n);
             return Self::error_response(
                 StatusCode::BAD_REQUEST,
                 "Currently only n=1 is supported".to_string(),
@@ -49,11 +57,14 @@ impl ChatCompletionHandler {
         }
 
         // Format the conversation into a prompt
+        println!("🔄 Formatting conversation...");
         let prompt = state.chat_formatter.format_chat(&request.messages);
+        println!("📝 Formatted prompt ({} chars)", prompt.len());
         tracing::debug!("Formatted prompt:\n{}", prompt);
 
         // Determine max tokens
         let max_tokens = request.max_tokens.unwrap_or(128);
+        println!("🎯 Max tokens: {}", max_tokens);
 
         // Get stop strings
         let mut stop_strings: Vec<String> = request.stop.clone().unwrap_or_default();
@@ -66,11 +77,16 @@ impl ChatCompletionHandler {
                 stop_strings.push(stop_string);
             }
         }
+        println!("🛑 Stop strings: {:?}", stop_strings);
 
         // Handle streaming vs non-streaming
         if request.stream {
+            println!("🌊 Starting streaming generation...");
+            println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
             Self::handle_streaming(state, prompt, max_tokens, stop_strings).await
         } else {
+            println!("📦 Starting non-streaming generation...");
+            println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
             Self::handle_non_streaming(state, prompt, max_tokens, stop_strings).await
         }
     }
@@ -82,9 +98,12 @@ impl ChatCompletionHandler {
         max_tokens: usize,
         stop_strings: Vec<String>,
     ) -> Response {
+        println!("🔒 Acquiring model lock...");
         let mut model = state.model.lock().await;
+        println!("✅ Model lock acquired");
 
         // Generate text
+        println!("🤖 Starting generation...");
         let generated = match model
             .generate_with_callback(
                 &prompt,
@@ -94,8 +113,12 @@ impl ChatCompletionHandler {
             )
             .await
         {
-            Ok(text) => text,
+            Ok(text) => {
+                println!("✅ Generation complete ({} chars)", text.len());
+                text
+            }
             Err(e) => {
+                println!("❌ Generation failed: {}", e);
                 return Self::error_response(
                     StatusCode::INTERNAL_SERVER_ERROR,
                     format!("Generation failed: {}", e),
@@ -110,6 +133,8 @@ impl ChatCompletionHandler {
                 content.truncate(pos);
             }
         }
+
+        println!("📤 Sending response ({} chars after stop removal)", content.trim().len());
 
         // Create response
         let response = ChatCompletionResponse {
@@ -151,18 +176,39 @@ impl ChatCompletionHandler {
         // Spawn generation task
         let state_clone = state.clone();
         tokio::spawn(async move {
+            println!("🔒 [Stream] Acquiring model lock...");
             let mut model = state_clone.model.lock().await;
+            println!("✅ [Stream] Model lock acquired");
+            println!("🤖 [Stream] Starting generation...");
 
+            let mut token_count = 0;
+            let start_time = std::time::Instant::now();
+            let mut last_log_time = start_time;
+            
             let callback = |text: &str| -> bool {
+                token_count += 1;
+                let now = std::time::Instant::now();
+                
+                if token_count % 10 == 1 {
+                    let elapsed = now.duration_since(start_time).as_secs_f64();
+                    let tokens_per_sec = token_count as f64 / elapsed;
+                    let recent_elapsed = now.duration_since(last_log_time).as_secs_f64();
+                    let recent_tps = 10.0 / recent_elapsed;
+                    
+                    println!("📝 [Stream] {} tokens | {:.1} tok/s overall | {:.1} tok/s recent", 
+                             token_count, tokens_per_sec, recent_tps);
+                    last_log_time = now;
+                }
+                
                 // Send the text chunk through the channel
                 if tx.send(text.to_string()).is_err() {
-                    tracing::warn!("Client disconnected");
+                    println!("⚠️  [Stream] Client disconnected");
                     return false;
                 }
                 true
             };
 
-            if let Err(e) = model
+            match model
                 .generate_with_callback(
                     &prompt,
                     max_tokens,
@@ -171,11 +217,20 @@ impl ChatCompletionHandler {
                 )
                 .await
             {
-                tracing::error!("Generation error: {}", e);
+                Ok(_) => {
+                    let elapsed = start_time.elapsed().as_secs_f64();
+                    let tokens_per_sec = token_count as f64 / elapsed;
+                    println!("✅ [Stream] Generation complete: {} tokens in {:.1}s ({:.1} tok/s)", 
+                             token_count, elapsed, tokens_per_sec);
+                }
+                Err(e) => {
+                    println!("❌ [Stream] Generation error: {}", e);
+                }
             }
         });
 
         // Create SSE stream
+        println!("🌊 Creating SSE stream...");
         let stream = Self::create_sse_stream(rx, state.model_name.clone());
 
         Sse::new(stream)

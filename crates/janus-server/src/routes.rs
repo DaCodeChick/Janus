@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 /// Root endpoint - displays server info
 async fn root() -> Html<&'static str> {
+    println!("📄 GET / - Serving API docs page");
     Html(r#"<!DOCTYPE html>
 <html>
 <head>
@@ -72,6 +73,7 @@ async fn root() -> Html<&'static str> {
 
 /// Chat UI endpoint - interactive web interface
 async fn chat_ui() -> Html<&'static str> {
+    println!("💬 GET /chat - Serving chat UI");
     Html(r#"<!DOCTYPE html>
 <html>
 <head>
@@ -81,19 +83,19 @@ async fn chat_ui() -> Html<&'static str> {
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
-            background: #f5f5f5;
+            background: #1a1a1a;
             height: 100vh;
             display: flex;
             flex-direction: column;
         }
         .header {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
+            background: linear-gradient(135deg, #4a5568 0%, #2d3748 100%);
+            color: #e2e8f0;
             padding: 20px;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            box-shadow: 0 2px 10px rgba(0,0,0,0.3);
         }
         .header h1 { font-size: 24px; font-weight: 600; }
-        .header p { opacity: 0.9; margin-top: 5px; font-size: 14px; }
+        .header p { opacity: 0.8; margin-top: 5px; font-size: 14px; }
         .chat-container {
             flex: 1;
             display: flex;
@@ -101,8 +103,8 @@ async fn chat_ui() -> Html<&'static str> {
             max-width: 900px;
             width: 100%;
             margin: 0 auto;
-            background: white;
-            box-shadow: 0 0 20px rgba(0,0,0,0.1);
+            background: #2d3748;
+            box-shadow: 0 0 20px rgba(0,0,0,0.5);
         }
         .messages {
             flex: 1;
@@ -138,7 +140,7 @@ async fn chat_ui() -> Html<&'static str> {
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
         }
         .message.assistant .avatar {
-            background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+            background: linear-gradient(135deg, #38b2ac 0%, #319795 100%);
         }
         .message-content {
             padding: 12px 16px;
@@ -148,16 +150,17 @@ async fn chat_ui() -> Html<&'static str> {
         }
         .message.user .message-content {
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
+            color: #ffffff;
         }
         .message.assistant .message-content {
-            background: #f0f0f0;
-            color: #333;
+            background: #1a202c;
+            color: #e2e8f0;
+            border: 1px solid #4a5568;
         }
         .input-area {
             padding: 20px;
-            background: white;
-            border-top: 1px solid #e0e0e0;
+            background: #2d3748;
+            border-top: 1px solid #4a5568;
         }
         .input-container {
             display: flex;
@@ -167,13 +170,18 @@ async fn chat_ui() -> Html<&'static str> {
         #messageInput {
             flex: 1;
             padding: 12px 16px;
-            border: 2px solid #e0e0e0;
+            border: 2px solid #4a5568;
+            background: #1a202c;
+            color: #e2e8f0;
             border-radius: 24px;
             font-size: 15px;
             font-family: inherit;
             resize: none;
             max-height: 120px;
             transition: border-color 0.2s;
+        }
+        #messageInput::placeholder {
+            color: #718096;
         }
         #messageInput:focus {
             outline: none;
@@ -206,7 +214,7 @@ async fn chat_ui() -> Html<&'static str> {
             width: 8px;
             height: 8px;
             border-radius: 50%;
-            background: #999;
+            background: #718096;
             animation: bounce 1.4s infinite ease-in-out both;
         }
         .typing-indicator span:nth-child(1) { animation-delay: -0.32s; }
@@ -216,11 +224,12 @@ async fn chat_ui() -> Html<&'static str> {
             40% { transform: scale(1); }
         }
         .error {
-            background: #fee;
-            color: #c33;
+            background: #742a2a;
+            color: #feb2b2;
             padding: 12px;
             border-radius: 8px;
             margin: 12px 20px;
+            border: 1px solid #9b2c2c;
         }
     </style>
 </head>
@@ -412,6 +421,7 @@ async fn chat_ui() -> Html<&'static str> {
 
 /// Health check endpoint
 async fn health(axum::extract::State(state): axum::extract::State<Arc<AppState>>) -> Json<serde_json::Value> {
+    println!("💚 GET /health - Health check");
     Json(json!({
         "status": "ok",
         "model": state.model_name,
