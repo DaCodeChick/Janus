@@ -196,9 +196,12 @@ impl Model {
 
             // Print only the newly generated text (streaming output)
             if full_text.len() > printed_len {
-                print!("{}", &full_text[printed_len..]);
-                std::io::Write::flush(&mut std::io::stdout()).ok();
-                printed_len = full_text.len();
+                if full_text.is_char_boundary(printed_len) {
+                    let diff = &full_text[printed_len..];
+                    print!("{}", diff);
+                    std::io::Write::flush(&mut std::io::stdout()).ok();
+                    printed_len = full_text.len();
+                }
             }
 
             // Update for next iteration
@@ -436,28 +439,30 @@ impl Model {
 
                 // Stream only the newly generated text via callback
                 if full_text.len() > printed_len {
-                    let new_text = &full_text[printed_len..];
+                    if full_text.is_char_boundary(printed_len) {
+                        let new_text = &full_text[printed_len..];
 
-                    if max_recent_window_len > 0 {
-                        recent_text_window.push_str(new_text);
-                        while recent_text_window.len() > max_recent_window_len {
-                            if let Some(first_char) = recent_text_window.chars().next() {
-                                let trim_len = first_char.len_utf8();
-                                recent_text_window.drain(..trim_len);
-                            } else {
-                                break;
+                        if max_recent_window_len > 0 {
+                            recent_text_window.push_str(new_text);
+                            while recent_text_window.len() > max_recent_window_len {
+                                if let Some(first_char) = recent_text_window.chars().next() {
+                                    let trim_len = first_char.len_utf8();
+                                    recent_text_window.drain(..trim_len);
+                                } else {
+                                    break;
+                                }
                             }
                         }
-                    }
 
-                    // Stop on stop-string suffix even when EOS token is not emitted exactly
-                    if has_stop_suffix(&full_text, &recent_text_window, stop_strings) {
-                        tracing::info!("Stop string suffix detected, stopping generation");
-                        finish_reason = String::from("stop");
-                        break;
-                    }
+                        // Stop on stop-string suffix even when EOS token is not emitted exactly
+                        if has_stop_suffix(&full_text, &recent_text_window, stop_strings) {
+                            tracing::info!("Stop string suffix detected, stopping generation");
+                            finish_reason = String::from("stop");
+                            break;
+                        }
 
-                    printed_len = full_text.len();
+                        printed_len = full_text.len();
+                    }
                 }
             }
 
