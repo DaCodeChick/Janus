@@ -147,6 +147,7 @@ async fn chat_ui() -> Html<&'static str> {
             border-radius: 18px;
             line-height: 1.5;
             word-wrap: break-word;
+            white-space: pre-wrap;
         }
         .message.user .message-content {
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
