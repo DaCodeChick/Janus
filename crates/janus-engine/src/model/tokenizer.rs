@@ -37,7 +37,7 @@ pub struct Tokenizer {
 }
 
 impl Tokenizer {
-    const MAX_SPECIAL_TOKEN_LEN: usize = 256;
+    const MAX_SPECIAL_TOKEN_LITERAL_CHARS: usize = 256;
 
     /// Load a tokenizer from a tokenizer.json file
     ///
@@ -202,7 +202,7 @@ impl Tokenizer {
 
         let end_rel = input[2..].find("|>")?;
         let len = 2 + end_rel + 2;
-        if len > Self::MAX_SPECIAL_TOKEN_LEN {
+        if len > Self::MAX_SPECIAL_TOKEN_LITERAL_CHARS {
             return None;
         }
 
@@ -216,7 +216,7 @@ impl Tokenizer {
 
         let end_rel = input[1..].find('>')?;
         let len = 1 + end_rel + 1;
-        if len > Self::MAX_SPECIAL_TOKEN_LEN {
+        if len > Self::MAX_SPECIAL_TOKEN_LITERAL_CHARS {
             return None;
         }
 
@@ -230,7 +230,7 @@ impl Tokenizer {
 
         let end_rel = input[1..].find(']')?;
         let len = 1 + end_rel + 1;
-        if len > Self::MAX_SPECIAL_TOKEN_LEN {
+        if len > Self::MAX_SPECIAL_TOKEN_LITERAL_CHARS {
             return None;
         }
 
