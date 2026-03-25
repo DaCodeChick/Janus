@@ -37,6 +37,8 @@ pub struct Tokenizer {
 }
 
 impl Tokenizer {
+    const LLAMA_BOS_TOKEN_ID: u32 = 1;
+    const LLAMA_DUMMY_PREFIX_SPACE_ID: u32 = 29_871;
     const MAX_SPECIAL_TOKEN_LITERAL_CHARS: usize = 256;
 
     /// Load a tokenizer from a tokenizer.json file
@@ -94,8 +96,7 @@ impl Tokenizer {
                 .tokenizer
                 .encode(text, add_special_tokens)
                 .map_err(|e| TokenizerError::EncodeFailed(e.to_string()))?;
-
-            return Ok(encoding.get_ids().to_vec());
+            return Ok(self.ensure_bos_anchor(encoding.get_ids().to_vec(), add_special_tokens));
         }
 
         let mut token_ids = Vec::new();
@@ -105,11 +106,12 @@ impl Tokenizer {
         while cursor < text.len() {
             if let Some((special_id, special_len)) = self.special_token_match(&text[cursor..]) {
                 if segment_start < cursor {
+                    let chunk = &text[segment_start..cursor];
                     let encoding = self
                         .tokenizer
-                        .encode(&text[segment_start..cursor], false)
+                        .encode(chunk, false)
                         .map_err(|e| TokenizerError::EncodeFailed(e.to_string()))?;
-                    token_ids.extend_from_slice(encoding.get_ids());
+                    self.extend_chunk_ids(&mut token_ids, chunk, encoding.get_ids());
                 }
 
                 token_ids.push(special_id);
@@ -123,15 +125,17 @@ impl Tokenizer {
         }
 
         if segment_start < text.len() {
+            let chunk = &text[segment_start..];
             let encoding = self
                 .tokenizer
-                .encode(&text[segment_start..], false)
+                .encode(chunk, false)
                 .map_err(|e| TokenizerError::EncodeFailed(e.to_string()))?;
-            token_ids.extend_from_slice(encoding.get_ids());
+            self.extend_chunk_ids(&mut token_ids, chunk, encoding.get_ids());
         }
 
         if add_special_tokens {
-            if let Some(bos_token_id) = self.bos_token_id() {
+            let bos_token_id = self.bos_token_id().unwrap_or(Self::LLAMA_BOS_TOKEN_ID);
+            if token_ids.first() != Some(&bos_token_id) {
                 token_ids.insert(0, bos_token_id);
             }
             if let Some(eos_token_id) = self.eos_token_id() {
@@ -139,7 +143,28 @@ impl Tokenizer {
             }
         }
 
-        Ok(token_ids)
+        Ok(self.ensure_bos_anchor(token_ids, add_special_tokens))
+    }
+
+    fn ensure_bos_anchor(&self, mut token_ids: Vec<u32>, add_special_tokens: bool) -> Vec<u32> {
+        if add_special_tokens && token_ids.first() != Some(&Self::LLAMA_BOS_TOKEN_ID) {
+            token_ids.insert(0, Self::LLAMA_BOS_TOKEN_ID);
+        }
+        token_ids
+    }
+
+    fn extend_chunk_ids(&self, token_ids: &mut Vec<u32>, chunk: &str, chunk_ids: &[u32]) {
+        if chunk_ids.is_empty() {
+            return;
+        }
+
+        let mut start = 0;
+        if chunk_ids.first() == Some(&Self::LLAMA_DUMMY_PREFIX_SPACE_ID) && !chunk.starts_with(' ')
+        {
+            start = 1;
+        }
+
+        token_ids.extend_from_slice(&chunk_ids[start..]);
     }
 
     fn contains_embedded_special_tokens(&self, text: &str) -> bool {
