@@ -1,7 +1,7 @@
 //! Chat server example
 //!
 //! Usage:
-//!   cargo run --example chat_server <model_path_or_dir> [--port 8080]
+//!   cargo run --example chat_server <model_path_or_dir> [--port 8080] [--template zephyr]
 //!
 //! If <model_path_or_dir> is a directory, it should contain:
 //!   - model.gguf or model.safetensors
@@ -20,7 +20,8 @@
 //! interactive chat interface, or visit http://localhost:8080 for API docs.
 
 use janus_engine::{
-    ChatFormatter, ComputeEngine, GGUFLoader, SafetensorsLoader, HuggingFaceConfig, Model, 
+    ChatFormatter, ChatTemplateFormat, ComputeEngine, GGUFLoader, SafetensorsLoader,
+    HuggingFaceConfig, Model,
     ModelConfig, Sampler, SamplerConfig, Tokenizer, TransformerBlock, TransformerBlockConfig,
 };
 use janus_server::{create_router, handlers::AppState};
@@ -30,6 +31,18 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
+
+fn parse_template(name: &str) -> Option<ChatTemplateFormat> {
+    match name.to_lowercase().as_str() {
+        "chatml" => Some(ChatTemplateFormat::ChatML),
+        "llama3" | "llama-3" => Some(ChatTemplateFormat::Llama3),
+        "llama2" | "llama-2" => Some(ChatTemplateFormat::Llama2),
+        "alpaca" => Some(ChatTemplateFormat::Alpaca),
+        "vicuna" => Some(ChatTemplateFormat::Vicuna),
+        "zephyr" | "tinyllama" => Some(ChatTemplateFormat::Zephyr),
+        _ => None,
+    }
+}
 
 /// Build TransformerBlock from tensor map
 fn build_transformer_block(
@@ -110,23 +123,41 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Parse command line arguments
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 {
-        eprintln!("Usage: {} <model_path_or_dir> [--port PORT]", args[0]);
+        eprintln!(
+            "Usage: {} <model_path_or_dir> [--port PORT] [--template TEMPLATE]",
+            args[0]
+        );
         eprintln!();
         eprintln!("Examples:");
         eprintln!("  {} ./models/llama-7b", args[0]);
         eprintln!("  {} ./models/llama-7b/model.gguf", args[0]);
         eprintln!("  {} ./models/llama-7b/model-00001-of-00002.safetensors", args[0]);
+        eprintln!("  {} ./models/tinyllama/model.safetensors --template llama2", args[0]);
+        eprintln!();
+        eprintln!("Templates: chatml, llama3, llama2, alpaca, vicuna, zephyr");
         std::process::exit(1);
     }
 
     let model_path_or_dir = PathBuf::from(&args[1]);
+    let input_is_file = model_path_or_dir.is_file();
     let mut port = 8080u16;
+    let mut template_override: Option<ChatTemplateFormat> = None;
 
     // Parse optional --port argument
     let mut i = 2;
     while i < args.len() {
         if args[i] == "--port" && i + 1 < args.len() {
             port = args[i + 1].parse()?;
+            i += 2;
+        } else if (args[i] == "--template" || args[i] == "-t") && i + 1 < args.len() {
+            template_override = parse_template(&args[i + 1]);
+            if template_override.is_none() {
+                return Err(format!(
+                    "Unknown template '{}'. Supported: chatml, llama3, llama2, alpaca, vicuna, zephyr",
+                    args[i + 1]
+                )
+                .into());
+            }
             i += 2;
         } else {
             i += 1;
@@ -398,8 +429,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("unknown");
-    let chat_formatter = ChatFormatter::from_model_name(model_name);
-    println!("✅ Chat formatter ready (template: {})", model_name);
+
+    let detection_name = if input_is_file {
+        model_dir
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or(model_name)
+    } else {
+        model_name
+    };
+
+    let chat_formatter = if let Some(template) = template_override {
+        println!("   Using explicit template override: {:?}", template);
+        ChatFormatter::new(template)
+    } else {
+        println!("   Auto-detecting template from: {}", detection_name);
+        ChatFormatter::from_model_name(detection_name)
+    };
+    println!("✅ Chat formatter ready ({:?})", chat_formatter.format());
     println!();
 
     // Create shared application state
