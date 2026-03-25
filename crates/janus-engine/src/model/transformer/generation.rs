@@ -3,6 +3,12 @@
 use super::Model;
 use crate::compute::Result;
 
+#[derive(Debug, Clone)]
+pub struct GenerationResult {
+    pub text: String,
+    pub finish_reason: String,
+}
+
 fn has_stop_suffix(text: &str, recent_text_window: &str, stop_strings: Option<&[String]>) -> bool {
     if let Some(stops) = stop_strings {
         return stops
@@ -11,6 +17,26 @@ fn has_stop_suffix(text: &str, recent_text_window: &str, stop_strings: Option<&[
     }
 
     false
+}
+
+fn parse_byte_fallback_token(token: &str) -> Option<u8> {
+    if token.len() == 6 && token.starts_with("<0x") && token.ends_with('>') {
+        let hex = &token[3..5];
+        return u8::from_str_radix(hex, 16).ok();
+    }
+    None
+}
+
+fn normalize_stream_piece(token: &str) -> String {
+    let mut normalized = String::with_capacity(token.len());
+    for ch in token.chars() {
+        if ch == '\u{2581}' || ch == 'Ġ' {
+            normalized.push(' ');
+        } else {
+            normalized.push(ch);
+        }
+    }
+    normalized
 }
 
 impl Model {
@@ -237,7 +263,7 @@ impl Model {
         max_tokens: usize,
         stop_strings: Option<&[String]>,
         mut callback: Option<F>,
-    ) -> Result<String>
+    ) -> Result<GenerationResult>
     where
         F: FnMut(&str) -> bool + Send, // Returns false to stop generation early
     {
@@ -295,15 +321,18 @@ impl Model {
             .unwrap_or(0);
         let mut recent_text_window = String::new();
         let max_recent_window_len = max_stop_len.saturating_mul(4);
+        let mut stream_byte_buffer: Vec<u8> = Vec::new();
 
         // High-precision benchmark timing
         let generation_start = std::time::Instant::now();
         let mut tokens_generated = 0u32;
+        let mut finish_reason = String::from("stop");
 
         for step in 0..max_tokens {
             // Check sequence length limit
             if seq_pos >= self.config.max_seq_len {
                 tracing::warn!("Reached maximum sequence length: {}", self.config.max_seq_len);
+                finish_reason = String::from("length");
                 break;
             }
 
@@ -335,12 +364,45 @@ impl Model {
             if let Some(eos_id) = eos_token_id {
                 if next_token == eos_id {
                     tracing::info!("Generated EOS token (ID: {}), stopping generation", eos_id);
+                    finish_reason = String::from("stop");
                     break;
                 }
             }
 
             // Add token to generated sequence
             generated_tokens.push(next_token);
+
+            if callback.is_some() {
+                let token_bytes = if let Some(token_text) = self.tokenizer.id_to_token(next_token) {
+                    if let Some(byte) = parse_byte_fallback_token(&token_text) {
+                        vec![byte]
+                    } else {
+                        normalize_stream_piece(&token_text).into_bytes()
+                    }
+                } else {
+                    self.tokenizer
+                        .decode(next_token)
+                        .map_err(|e| {
+                            crate::compute::ComputeError::Other(format!(
+                                "Token decode failed: {}",
+                                e
+                            ))
+                        })?
+                        .into_bytes()
+                };
+
+                stream_byte_buffer.extend_from_slice(&token_bytes);
+                if let Ok(text) = std::str::from_utf8(&stream_byte_buffer) {
+                    if let Some(ref mut cb) = callback {
+                        if !cb(text) {
+                            tracing::info!("Callback requested stop");
+                            finish_reason = String::from("stop");
+                            break;
+                        }
+                    }
+                    stream_byte_buffer.clear();
+                }
+            }
 
             if needs_incremental_text {
                 // Decode only when text-based stop/callback processing is needed
@@ -357,6 +419,7 @@ impl Model {
                                 "Stop string '{}' suffix detected, stopping generation",
                                 stop_str
                             );
+                            finish_reason = String::from("stop");
                             should_stop = true;
                             break;
                         }
@@ -385,15 +448,10 @@ impl Model {
                     // Stop on stop-string suffix even when EOS token is not emitted exactly
                     if has_stop_suffix(&full_text, &recent_text_window, stop_strings) {
                         tracing::info!("Stop string suffix detected, stopping generation");
+                        finish_reason = String::from("stop");
                         break;
                     }
 
-                    if let Some(ref mut cb) = callback {
-                        if !cb(new_text) {
-                            tracing::info!("Callback requested stop");
-                            break;
-                        }
-                    }
                     printed_len = full_text.len();
                 }
             }
@@ -403,11 +461,23 @@ impl Model {
             seq_pos += 1;
         }
 
+        if !stream_byte_buffer.is_empty() {
+            if let Ok(text) = std::str::from_utf8(&stream_byte_buffer) {
+                if let Some(ref mut cb) = callback {
+                    let _ = cb(text);
+                }
+            }
+        }
+
         // Decode final text from all generated tokens
         let generated_text = self
             .tokenizer
             .decode_batch(&generated_tokens)
             .map_err(|e| crate::compute::ComputeError::Other(format!("Final detokenization failed: {}", e)))?;
+
+        if generated_tokens.len() >= max_tokens && finish_reason != "length" {
+            finish_reason = String::from("length");
+        }
 
         // Calculate telemetry
         let elapsed_secs = generation_start.elapsed().as_secs_f64();
@@ -424,7 +494,10 @@ impl Model {
             tps
         );
 
-        Ok(generated_text)
+        Ok(GenerationResult {
+            text: generated_text,
+            finish_reason,
+        })
     }
 
     /// Generate text autoregressively for multiple prompts in parallel using sampler's max_tokens
@@ -674,7 +747,7 @@ impl Model {
 
 #[cfg(test)]
 mod tests {
-    use super::has_stop_suffix;
+    use super::{has_stop_suffix, normalize_stream_piece, parse_byte_fallback_token};
 
     #[test]
     fn test_stop_suffix_detects_direct_suffix() {
@@ -701,5 +774,30 @@ mod tests {
     #[test]
     fn test_stop_suffix_handles_no_stop_strings() {
         assert!(!has_stop_suffix("anything", "window", None));
+    }
+
+    #[test]
+    fn test_parse_byte_fallback_token_valid() {
+        assert_eq!(parse_byte_fallback_token("<0xE2>"), Some(0xE2));
+        assert_eq!(parse_byte_fallback_token("<0x82>"), Some(0x82));
+        assert_eq!(parse_byte_fallback_token("<0xAC>"), Some(0xAC));
+    }
+
+    #[test]
+    fn test_parse_byte_fallback_token_invalid() {
+        assert_eq!(parse_byte_fallback_token("hello"), None);
+        assert_eq!(parse_byte_fallback_token("<0xGG>"), None);
+        assert_eq!(parse_byte_fallback_token("<0x1>"), None);
+    }
+
+    #[test]
+    fn test_normalize_stream_piece_sentencepiece_space() {
+        assert_eq!(normalize_stream_piece("▁Hello"), " Hello");
+        assert_eq!(normalize_stream_piece("▁world"), " world");
+    }
+
+    #[test]
+    fn test_normalize_stream_piece_gpt2_space() {
+        assert_eq!(normalize_stream_piece("ĠHello"), " Hello");
     }
 }

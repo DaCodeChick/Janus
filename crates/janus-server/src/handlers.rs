@@ -17,6 +17,11 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::Mutex;
 
+enum StreamEvent {
+    Chunk(String),
+    Done(String),
+}
+
 /// Shared application state
 pub struct AppState {
     pub model: Arc<Mutex<Model>>,
@@ -104,7 +109,7 @@ impl ChatCompletionHandler {
 
         // Generate text
         println!("🤖 Starting generation...");
-        let generated = match model
+        let generation = match model
             .generate_with_callback(
                 &prompt,
                 max_tokens,
@@ -113,9 +118,9 @@ impl ChatCompletionHandler {
             )
             .await
         {
-            Ok(text) => {
-                println!("✅ Generation complete ({} chars)", text.len());
-                text
+            Ok(result) => {
+                println!("✅ Generation complete ({} chars)", result.text.len());
+                result
             }
             Err(e) => {
                 println!("❌ Generation failed: {}", e);
@@ -127,7 +132,7 @@ impl ChatCompletionHandler {
         };
 
         // Remove any stop strings from the output
-        let mut content = generated.clone();
+        let mut content = generation.text.clone();
         for stop_str in &stop_strings {
             if let Some(pos) = content.find(stop_str) {
                 content.truncate(pos);
@@ -151,7 +156,7 @@ impl ChatCompletionHandler {
                     role: "assistant".to_string(),
                     content: content.trim().to_string(),
                 },
-                finish_reason: Some("stop".to_string()),
+                finish_reason: Some(generation.finish_reason.clone()),
             }],
             usage: Usage {
                 prompt_tokens: 0, // TODO: Calculate from tokenizer
@@ -171,7 +176,7 @@ impl ChatCompletionHandler {
         stop_strings: Vec<String>,
     ) -> Response {
         // Create a channel for streaming tokens
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<StreamEvent>();
 
         // Spawn generation task
         let state_clone = state.clone();
@@ -201,7 +206,7 @@ impl ChatCompletionHandler {
                 }
                 
                 // Send the text chunk through the channel
-                if tx.send(text.to_string()).is_err() {
+                if tx.send(StreamEvent::Chunk(text.to_string())).is_err() {
                     println!("⚠️  [Stream] Client disconnected");
                     return false;
                 }
@@ -217,14 +222,21 @@ impl ChatCompletionHandler {
                 )
                 .await
             {
-                Ok(_) => {
+                Ok(result) => {
                     let elapsed = start_time.elapsed().as_secs_f64();
                     let tokens_per_sec = token_count as f64 / elapsed;
-                    println!("✅ [Stream] Generation complete: {} tokens in {:.1}s ({:.1} tok/s)", 
-                             token_count, elapsed, tokens_per_sec);
+                    println!(
+                        "✅ [Stream] Generation complete: {} tokens in {:.1}s ({:.1} tok/s), finish_reason={}",
+                        token_count,
+                        elapsed,
+                        tokens_per_sec,
+                        result.finish_reason
+                    );
+                    let _ = tx.send(StreamEvent::Done(result.finish_reason));
                 }
                 Err(e) => {
                     println!("❌ [Stream] Generation error: {}", e);
+                    let _ = tx.send(StreamEvent::Done("stop".to_string()));
                 }
             }
         });
@@ -240,7 +252,7 @@ impl ChatCompletionHandler {
 
     /// Create Server-Sent Events stream from token channel
     fn create_sse_stream(
-        rx: tokio::sync::mpsc::UnboundedReceiver<String>,
+        rx: tokio::sync::mpsc::UnboundedReceiver<StreamEvent>,
         model_name: String,
     ) -> impl Stream<Item = Result<Event, Infallible>> {
         let id = format!("chatcmpl-{}", uuid::Uuid::new_v4());
@@ -250,8 +262,8 @@ impl ChatCompletionHandler {
             .unwrap_or(0);
 
         stream::unfold(
-            (rx, id, created, model_name, false, false),
-            |(mut rx, id, created, model_name, mut sent_role, mut finished)| async move {
+            (rx, id, created, model_name, false, false, String::from("stop")),
+            |(mut rx, id, created, model_name, mut sent_role, mut finished, mut finish_reason)| async move {
                 if finished {
                     return None;
                 }
@@ -284,13 +296,13 @@ impl ChatCompletionHandler {
                     let event = Event::default().data(data);
                     return Some((
                         Ok(event),
-                        (rx, id, created, model_name, sent_role, finished),
+                        (rx, id, created, model_name, sent_role, finished, finish_reason),
                     ));
                 }
 
-                // Receive next token
+                // Receive next stream event
                 match rx.recv().await {
-                    Some(content) => {
+                    Some(StreamEvent::Chunk(content)) => {
                         let chunk = ChatCompletionChunk {
                             id: id.clone(),
                             object: "chat.completion.chunk".to_string(),
@@ -314,7 +326,37 @@ impl ChatCompletionHandler {
                             }
                         };
                         let event = Event::default().data(data);
-                        Some((Ok(event), (rx, id, created, model_name, sent_role, finished)))
+                        Some((Ok(event), (rx, id, created, model_name, sent_role, finished, finish_reason)))
+                    }
+                    Some(StreamEvent::Done(reason)) => {
+                        finish_reason = reason;
+
+                        // Send final chunk with finish_reason
+                        finished = true;
+                        let chunk = ChatCompletionChunk {
+                            id: id.clone(),
+                            object: "chat.completion.chunk".to_string(),
+                            created,
+                            model: model_name.clone(),
+                            choices: vec![ChunkChoice {
+                                index: 0,
+                                delta: Delta {
+                                    role: None,
+                                    content: None,
+                                },
+                                finish_reason: Some(finish_reason.clone()),
+                            }],
+                        };
+
+                        let data = match serde_json::to_string(&chunk) {
+                            Ok(s) => s,
+                            Err(e) => {
+                                tracing::error!("Failed to serialize final SSE chunk: {}", e);
+                                return None;
+                            }
+                        };
+                        let event = Event::default().data(data);
+                        Some((Ok(event), (rx, id, created, model_name, sent_role, finished, finish_reason)))
                     }
                     None => {
                         // Send final chunk with finish_reason
@@ -330,7 +372,7 @@ impl ChatCompletionHandler {
                                     role: None,
                                     content: None,
                                 },
-                                finish_reason: Some("stop".to_string()),
+                                finish_reason: Some(finish_reason),
                             }],
                         };
 
@@ -342,7 +384,7 @@ impl ChatCompletionHandler {
                             }
                         };
                         let event = Event::default().data(data);
-                        Some((Ok(event), (rx, id, created, model_name, sent_role, finished)))
+                        Some((Ok(event), (rx, id, created, model_name, sent_role, finished, String::from("stop"))))
                     }
                 }
             },

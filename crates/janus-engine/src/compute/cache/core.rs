@@ -210,8 +210,15 @@ impl KVCache {
             );
         }
 
-        // Ensure position is within bounds
-        let cache_position = position % self.max_seq_len;
+        // Disallow silent ring-buffer wraparound until sliding window attention is implemented.
+        if position >= self.max_seq_len {
+            return Err(crate::compute::ComputeError::Other(format!(
+                "KV cache position {} exceeds max_seq_len {}",
+                position, self.max_seq_len
+            )));
+        }
+
+        let cache_position = position;
 
         // Update Key cache
         self.update_cache_buffer(
