@@ -30,10 +30,12 @@ fn parse_byte_fallback_token(token: &str) -> Option<u8> {
 fn normalize_stream_piece(token: &str) -> String {
     let mut normalized = String::with_capacity(token.len());
     for ch in token.chars() {
-        if ch == '\u{2581}' || ch == 'Ġ' {
-            normalized.push(' ');
-        } else {
-            normalized.push(ch);
+        match ch {
+            '\u{2581}' | 'Ġ' => normalized.push(' '),
+            // GPT-2 byte-level BPE newline/carriage-return markers.
+            'Ċ' => normalized.push('\n'),
+            'č' => normalized.push('\r'),
+            _ => normalized.push(ch),
         }
     }
     normalized
@@ -799,5 +801,11 @@ mod tests {
     #[test]
     fn test_normalize_stream_piece_gpt2_space() {
         assert_eq!(normalize_stream_piece("ĠHello"), " Hello");
+    }
+
+    #[test]
+    fn test_normalize_stream_piece_newlines() {
+        assert_eq!(normalize_stream_piece("line1Ċline2"), "line1\nline2");
+        assert_eq!(normalize_stream_piece("ačb"), "a\rb");
     }
 }
