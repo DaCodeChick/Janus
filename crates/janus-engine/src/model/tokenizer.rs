@@ -37,6 +37,8 @@ pub struct Tokenizer {
 }
 
 impl Tokenizer {
+    const MAX_SPECIAL_TOKEN_LEN: usize = 256;
+
     /// Load a tokenizer from a tokenizer.json file
     ///
     /// The tokenizer.json file should be in HuggingFace tokenizers format,
@@ -86,12 +88,153 @@ impl Tokenizer {
     /// println!("Tokens: {:?}", tokens);
     /// ```
     pub fn encode(&self, text: &str, add_special_tokens: bool) -> Result<Vec<u32>> {
-        let encoding = self
-            .tokenizer
-            .encode(text, add_special_tokens)
-            .map_err(|e| TokenizerError::EncodeFailed(e.to_string()))?;
+        // Fast path: no embedded special tokens in the input text.
+        if !self.contains_embedded_special_tokens(text) {
+            let encoding = self
+                .tokenizer
+                .encode(text, add_special_tokens)
+                .map_err(|e| TokenizerError::EncodeFailed(e.to_string()))?;
 
-        Ok(encoding.get_ids().to_vec())
+            return Ok(encoding.get_ids().to_vec());
+        }
+
+        let mut token_ids = Vec::new();
+        let mut segment_start = 0;
+        let mut cursor = 0;
+
+        while cursor < text.len() {
+            if let Some((special_id, special_len)) = self.special_token_match(&text[cursor..]) {
+                if segment_start < cursor {
+                    let encoding = self
+                        .tokenizer
+                        .encode(&text[segment_start..cursor], false)
+                        .map_err(|e| TokenizerError::EncodeFailed(e.to_string()))?;
+                    token_ids.extend_from_slice(encoding.get_ids());
+                }
+
+                token_ids.push(special_id);
+                cursor += special_len;
+                segment_start = cursor;
+                continue;
+            }
+
+            let next_char_len = text[cursor..].chars().next().map_or(1, char::len_utf8);
+            cursor += next_char_len;
+        }
+
+        if segment_start < text.len() {
+            let encoding = self
+                .tokenizer
+                .encode(&text[segment_start..], false)
+                .map_err(|e| TokenizerError::EncodeFailed(e.to_string()))?;
+            token_ids.extend_from_slice(encoding.get_ids());
+        }
+
+        if add_special_tokens {
+            if let Some(bos_token_id) = self.bos_token_id() {
+                token_ids.insert(0, bos_token_id);
+            }
+            if let Some(eos_token_id) = self.eos_token_id() {
+                token_ids.push(eos_token_id);
+            }
+        }
+
+        Ok(token_ids)
+    }
+
+    fn contains_embedded_special_tokens(&self, text: &str) -> bool {
+        let mut cursor = 0;
+        while cursor < text.len() {
+            if self.special_token_match(&text[cursor..]).is_some() {
+                return true;
+            }
+
+            let next_char_len = text[cursor..].chars().next().map_or(1, char::len_utf8);
+            cursor += next_char_len;
+        }
+
+        false
+    }
+
+    fn special_token_match(&self, input: &str) -> Option<(u32, usize)> {
+        let mut best_match: Option<(u32, usize)> = None;
+
+        if let Some((candidate, len)) = Self::angle_bracket_pipe_candidate(input) {
+            if let Some(id) = self.special_token_id(candidate) {
+                best_match = Some((id, len));
+            }
+        }
+
+        if let Some((candidate, len)) = Self::angle_bracket_candidate(input) {
+            if let Some(id) = self.special_token_id(candidate) {
+                match best_match {
+                    Some((_, best_len)) if best_len >= len => {}
+                    _ => best_match = Some((id, len)),
+                }
+            }
+        }
+
+        if let Some((candidate, len)) = Self::square_bracket_candidate(input) {
+            if let Some(id) = self.special_token_id(candidate) {
+                match best_match {
+                    Some((_, best_len)) if best_len >= len => {}
+                    _ => best_match = Some((id, len)),
+                }
+            }
+        }
+
+        best_match
+    }
+
+    fn special_token_id(&self, token: &str) -> Option<u32> {
+        let id = self.tokenizer.token_to_id(token)?;
+        if self.tokenizer.id_to_token(id).as_deref() == Some(token) {
+            Some(id)
+        } else {
+            None
+        }
+    }
+
+    fn angle_bracket_pipe_candidate(input: &str) -> Option<(&str, usize)> {
+        if !input.starts_with("<|") {
+            return None;
+        }
+
+        let end_rel = input[2..].find("|>")?;
+        let len = 2 + end_rel + 2;
+        if len > Self::MAX_SPECIAL_TOKEN_LEN {
+            return None;
+        }
+
+        Some((&input[..len], len))
+    }
+
+    fn angle_bracket_candidate(input: &str) -> Option<(&str, usize)> {
+        if !input.starts_with('<') {
+            return None;
+        }
+
+        let end_rel = input[1..].find('>')?;
+        let len = 1 + end_rel + 1;
+        if len > Self::MAX_SPECIAL_TOKEN_LEN {
+            return None;
+        }
+
+        Some((&input[..len], len))
+    }
+
+    fn square_bracket_candidate(input: &str) -> Option<(&str, usize)> {
+        if !input.starts_with('[') {
+            return None;
+        }
+
+        let end_rel = input[1..].find(']')?;
+        let len = 1 + end_rel + 1;
+        if len > Self::MAX_SPECIAL_TOKEN_LEN {
+            return None;
+        }
+
+        Some((&input[..len], len))
     }
 
     /// Decode a single token ID into text
