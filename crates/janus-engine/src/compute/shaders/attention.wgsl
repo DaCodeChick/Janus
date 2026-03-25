@@ -62,13 +62,16 @@ struct Params {
 @compute @workgroup_size(256)
 fn compute_qk_scores(
     @builtin(global_invocation_id) global_id: vec3<u32>,
+    @builtin(local_invocation_id) local_id: vec3<u32>,
     @builtin(workgroup_id) workgroup_id: vec3<u32>,
 ) {
-    // Workgroup ID encodes: batch_idx * num_heads + head_idx
-    let combined_idx = workgroup_id.x;
+    // Y workgroup dimension encodes: batch_idx * num_heads + head_idx
+    let combined_idx = workgroup_id.y;
     let batch_idx = combined_idx / params.num_heads;
     let head_idx = combined_idx % params.num_heads;
-    let key_pos = global_id.x - (workgroup_id.x * 256u);
+
+    // X workgroup dimension tiles sequence positions by 256 threads per workgroup
+    let key_pos = workgroup_id.x * 256u + local_id.x;
     
     // Early exit if beyond bounds
     if (batch_idx >= params.batch_size || head_idx >= params.num_heads || key_pos >= params.seq_len) {

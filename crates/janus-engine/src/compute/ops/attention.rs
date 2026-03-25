@@ -200,8 +200,10 @@ pub fn compute_attention(
         });
         compute_pass.set_pipeline(&pipeline_cache.attention_qk_pipeline);
         compute_pass.set_bind_group(0, &qk_bind_group, &[]);
-        // Dispatch batch_size * num_heads workgroups (one per batch item per head)
-        compute_pass.dispatch_workgroups(batch_size * num_heads, 1, 1);
+        // X dimension tiles sequence positions (256 keys per workgroup),
+        // Y dimension selects one (batch, head) pair per workgroup row.
+        let qk_workgroups_x = (seq_len + 255) / 256;
+        compute_pass.dispatch_workgroups(qk_workgroups_x, batch_size * num_heads, 1);
     }
     {
         let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
