@@ -11,7 +11,7 @@ use axum::{
     Json,
 };
 use futures::stream::{self, Stream};
-use janus_engine::{ChatFormatter, Model};
+use janus_engine::{ChatFormatter, ChatMessage, ChatRole, Model};
 use std::convert::Infallible;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -61,9 +61,22 @@ impl ChatCompletionHandler {
             );
         }
 
+        // Ensure a stable system anchor exists for chat templates.
+        let mut messages = request.messages.clone();
+        if !messages.iter().any(|msg| msg.role == ChatRole::System) {
+            messages.insert(
+                0,
+                ChatMessage {
+                    role: ChatRole::System,
+                    content: "You are a helpful AI assistant.".to_string(),
+                },
+            );
+            println!("🧭 Injected default system message");
+        }
+
         // Format the conversation into a prompt
         println!("🔄 Formatting conversation...");
-        let prompt = state.chat_formatter.format_chat(&request.messages);
+        let prompt = state.chat_formatter.format_chat(&messages);
         println!("📝 Formatted prompt ({} chars)", prompt.len());
         tracing::debug!("Formatted prompt:\n{}", prompt);
 

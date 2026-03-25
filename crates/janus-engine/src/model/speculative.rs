@@ -162,9 +162,17 @@ impl SpeculativeDecoder {
 
         // Step 1: Tokenize prompt
         tracing::info!("Speculative decoding: tokenizing prompt");
-        let token_ids = self.draft_model.tokenizer()
-            .encode(prompt, false)
+        let mut token_ids = self
+            .draft_model
+            .tokenizer()
+            .encode(prompt, true)
             .map_err(|e| crate::compute::ComputeError::Other(format!("Tokenization failed: {}", e)))?;
+
+        if let Some(eos_token_id) = self.draft_model.tokenizer().eos_token_id() {
+            if token_ids.last() == Some(&eos_token_id) {
+                token_ids.pop();
+            }
+        }
 
         if token_ids.is_empty() {
             return Err(crate::compute::ComputeError::Other(

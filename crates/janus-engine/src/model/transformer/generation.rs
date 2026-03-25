@@ -85,14 +85,15 @@ impl Model {
         tracing::info!("Tokenizing prompt: \"{}\"", prompt);
         let mut token_ids = self
             .tokenizer
-            .encode(prompt, false)  // Don't add special tokens automatically
+            .encode(prompt, true)
             .map_err(|e| crate::compute::ComputeError::Other(format!("Tokenization failed: {}", e)))?;
 
-        // CRITICAL: LLaMA models REQUIRE a BOS token at the start
-        // Without this, the model has no context anchor and produces gibberish
-        let bos_token_id = self.tokenizer.bos_token_id().unwrap_or(1);
-        token_ids.insert(0, bos_token_id);
-        tracing::info!("Prepended BOS token (ID: {}) to prompt", bos_token_id);
+        // Keep BOS from tokenizer special-token handling, but avoid seeding decode from EOS.
+        if let Some(eos_token_id) = self.tokenizer.eos_token_id() {
+            if token_ids.last() == Some(&eos_token_id) {
+                token_ids.pop();
+            }
+        }
 
         if token_ids.is_empty() {
             return Err(crate::compute::ComputeError::Other(
@@ -273,13 +274,15 @@ impl Model {
         tracing::info!("Tokenizing prompt: \"{}\"", prompt);
         let mut token_ids = self
             .tokenizer
-            .encode(prompt, false)
+            .encode(prompt, true)
             .map_err(|e| crate::compute::ComputeError::Other(format!("Tokenization failed: {}", e)))?;
 
-        // Add BOS token
-        let bos_token_id = self.tokenizer.bos_token_id().unwrap_or(1);
-        token_ids.insert(0, bos_token_id);
-        tracing::info!("Prepended BOS token (ID: {}) to prompt", bos_token_id);
+        // Keep BOS from tokenizer special-token handling, but avoid seeding decode from EOS.
+        if let Some(eos_token_id) = self.tokenizer.eos_token_id() {
+            if token_ids.last() == Some(&eos_token_id) {
+                token_ids.pop();
+            }
+        }
 
         if token_ids.is_empty() {
             return Err(crate::compute::ComputeError::Other(
@@ -583,16 +586,24 @@ impl Model {
         // Step 1: Tokenize all prompts
         let mut all_token_ids: Vec<Vec<u32>> = Vec::new();
         let bos_token_id = self.tokenizer.bos_token_id().unwrap_or(1);
+        let eos_token_id = self.tokenizer.eos_token_id();
 
         for (idx, prompt) in prompts.iter().enumerate() {
             tracing::info!("Tokenizing prompt {}/{}: \"{}\"", idx + 1, batch_size, prompt);
             let mut token_ids = self
                 .tokenizer
-                .encode(prompt, false)
+                .encode(prompt, true)
                 .map_err(|e| crate::compute::ComputeError::Other(format!("Tokenization failed for prompt {}: {}", idx, e)))?;
 
-            // Add BOS token
-            token_ids.insert(0, bos_token_id);
+            if let Some(eos_id) = eos_token_id {
+                if token_ids.last() == Some(&eos_id) {
+                    token_ids.pop();
+                }
+            }
+
+            if token_ids.first() != Some(&bos_token_id) {
+                token_ids.insert(0, bos_token_id);
+            }
             tracing::info!("Prompt {}: {} tokens", idx + 1, token_ids.len());
 
             all_token_ids.push(token_ids);
