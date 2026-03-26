@@ -182,9 +182,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let extension = model_path
         .extension()
         .and_then(|e| e.to_str())
-        .unwrap_or("");
+        .unwrap_or("")
+        .to_ascii_lowercase();
     
-    let (tensors, model_config) = match extension {
+    let (tensors, model_config) = match extension.as_str() {
         "gguf" => {
             let loader = GGUFFile::from_file(&model_path)?;
             println!("   Format: GGUF");

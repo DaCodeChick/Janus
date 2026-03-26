@@ -204,8 +204,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
     println!();
     
+    let extension = model_path
+        .extension()
+        .and_then(|s| s.to_str())
+        .map(|s| s.to_ascii_lowercase());
+
     println!("📂 Loading model from: {:?}", model_path);
-    println!("⚙️  Loading config from: {:?}", config_path);
+    if extension.as_deref() == Some("safetensors") {
+        println!("⚙️  Loading config from: {:?}", config_path);
+    } else {
+        println!("⚙️  Model config source: embedded GGUF metadata");
+    }
     println!("🔤 Loading tokenizer from: {:?}", tokenizer_path);
     println!();
 
@@ -242,8 +251,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Load model file
     println!("📥 Loading model weights...");
-    let extension = model_path.extension().and_then(|s| s.to_str());
-    let (tensors, model_config) = if extension == Some("gguf") {
+    let (tensors, model_config) = if extension.as_deref() == Some("gguf") {
         println!("   Format: GGUF");
         let model_loader = match GGUFLoader::from_file(&model_path) {
             Ok(loader) => {
@@ -273,7 +281,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 return Err(e.into());
             }
         }
-    } else if extension == Some("safetensors") {
+    } else if extension.as_deref() == Some("safetensors") {
         println!("   Format: Safetensors");
         println!("⚙️  Loading model configuration...");
         let hf_config = match HuggingFaceConfig::from_file(&config_path) {

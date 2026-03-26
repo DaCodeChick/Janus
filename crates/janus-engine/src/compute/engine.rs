@@ -180,6 +180,65 @@ impl ComputeEngine {
         Self::pack_f16_to_u32(&f16_vec)
     }
 
+    /// Convert Q6_K blocks to packed FP16 format.
+    ///
+    /// Q6_K block layout (210 bytes for 256 values):
+    /// - ql[128]: low 4 bits for each value (two values per byte)
+    /// - qh[64]: high 2 bits for each value (four values per byte)
+    /// - scales[16]: signed int8 scales per 16-value group
+    /// - d[2]: f16 super-scale
+    fn q6_k_to_packed_f16(q6k_data: &[u8], num_elements: usize) -> Result<Vec<u32>> {
+        const Q6K_BLOCK_SIZE: usize = 256;
+        const Q6K_BLOCK_BYTES: usize = 210;
+
+        if q6k_data.len() % Q6K_BLOCK_BYTES != 0 {
+            return Err(ComputeError::InvalidDimensions(format!(
+                "Q6_K tensor byte size {} is not a multiple of {}",
+                q6k_data.len(),
+                Q6K_BLOCK_BYTES
+            )));
+        }
+
+        let num_blocks = q6k_data.len() / Q6K_BLOCK_BYTES;
+        let mut dequantized = Vec::with_capacity(num_blocks * Q6K_BLOCK_SIZE);
+
+        for block_idx in 0..num_blocks {
+            let offset = block_idx * Q6K_BLOCK_BYTES;
+            let block = &q6k_data[offset..offset + Q6K_BLOCK_BYTES];
+
+            let ql = &block[0..128];
+            let qh = &block[128..192];
+            let scales = &block[192..208];
+            let d_bits = u16::from_le_bytes([block[208], block[209]]);
+            let d = f16::from_bits(d_bits).to_f32();
+
+            for i in 0..Q6K_BLOCK_SIZE {
+                let ql_byte = ql[i / 2];
+                let lo = if i % 2 == 0 {
+                    ql_byte & 0x0F
+                } else {
+                    (ql_byte >> 4) & 0x0F
+                };
+
+                let qh_byte = qh[i / 4];
+                let hi = (qh_byte >> (2 * (i % 4))) & 0x03;
+
+                let q = ((hi << 4) | lo) as i32;
+                let q_signed = q - 32;
+                let s = scales[i / 16] as i8 as f32;
+
+                let value = d * s * q_signed as f32;
+                dequantized.push(f16::from_f32(value));
+            }
+        }
+
+        if dequantized.len() > num_elements {
+            dequantized.truncate(num_elements);
+        }
+
+        Ok(Self::pack_f16_to_u32(&dequantized))
+    }
+
     /// Allocate tensors from a model file to GPU buffers
     ///
     /// Accepts any ModelLoader implementation (GGUF, Safetensors, etc.)
@@ -202,12 +261,13 @@ impl ComputeEngine {
         tracing::info!("Allocating {} tensors to GPU VRAM", tensors.len());
 
         let mut total_bytes = 0u64;
-        let mut skipped_count = 0;
+        let skipped_count = 0;
         let mut f32_packed_count = 0;
         let mut f16_packed_count = 0;
         let mut bf16_packed_count = 0;
         let mut q4k_count = 0;
         let mut q5k_count = 0;
+        let mut q6k_count = 0;
         let mut q8_0_count = 0;
 
         for (name, tensor) in tensors {
@@ -433,21 +493,43 @@ impl ComputeEngine {
                     tensor_buffers.insert(name, buffer);
                 }
 
-                _ => {
-                    // Skip unsupported types (other quantized formats will be added later)
-                    tracing::warn!(
-                        "Skipping tensor '{}' with type {:?} (not yet supported)",
+                TensorDType::Q6_K => {
+                    // Convert Q6_K to packed FP16 so it can run through standard GEMM path.
+                    let num_elements: usize = tensor.shape.iter().product();
+                    let packed_data = Self::q6_k_to_packed_f16(tensor.data, num_elements)?;
+                    let packed_bytes = bytemuck::cast_slice(&packed_data);
+
+                    let buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                        label: Some(&format!("tensor_{}_q6k_to_packed_f16", name)),
+                        contents: packed_bytes,
+                        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                    });
+
+                    total_bytes += packed_bytes.len() as u64;
+                    q6k_count += 1;
+
+                    tracing::debug!(
+                        "Allocated tensor '{}': {} bytes (Q6_K -> packed FP16, {} elements)",
                         name,
-                        tensor.dtype
+                        packed_bytes.len(),
+                        num_elements
                     );
-                    skipped_count += 1;
+
+                    tensor_buffers.insert(name, buffer);
+                }
+
+                _ => {
+                    return Err(ComputeError::Other(format!(
+                        "Unsupported tensor dtype {:?} for tensor '{}'. This model likely uses a quantization format not yet supported by Janus (for example Q6_K or IQ variants).",
+                        tensor.dtype, name
+                    )));
                 }
             }
         }
 
         let total_mb = total_bytes as f64 / (1024.0 * 1024.0);
         tracing::info!(
-            "Successfully allocated {} tensors ({:.2} MB) to GPU VRAM: {} F32->FP16, {} F16->FP16, {} BF16->FP16, {} Q4_K, {} Q5_K, {} Q8_0, {} skipped",
+            "Successfully allocated {} tensors ({:.2} MB) to GPU VRAM: {} F32->FP16, {} F16->FP16, {} BF16->FP16, {} Q4_K, {} Q5_K, {} Q6_K->FP16, {} Q8_0, {} skipped",
             tensor_buffers.len(),
             total_mb,
             f32_packed_count,
@@ -455,6 +537,7 @@ impl ComputeEngine {
             bf16_packed_count,
             q4k_count,
             q5k_count,
+            q6k_count,
             q8_0_count,
             skipped_count
         );
