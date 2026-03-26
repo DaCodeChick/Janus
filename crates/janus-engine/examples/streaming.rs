@@ -26,6 +26,7 @@ use janus_engine::{
     ComputeEngine, GGUFFile, SafetensorsFile, HuggingFaceConfig,
     Model, ModelConfig, Tokenizer, Sampler, SamplerConfig, TransformerBlock, TransformerBlockConfig
 };
+use janus_engine::model::block::get_tensor;
 
 /// Build TransformerBlock from tensor map
 fn build_transformer_block(
@@ -33,65 +34,64 @@ fn build_transformer_block(
     layer_idx: u32,
     tensors: &HashMap<String, wgpu::Buffer>,
 ) -> Result<TransformerBlock, Box<dyn std::error::Error>> {
-    // Common tensor name patterns for LLaMA/Mistral models
-    let patterns = vec![
-        // LLaMA pattern
-        (
-            format!("model.layers.{}.self_attn.q_proj.weight", layer_idx),
-            format!("model.layers.{}.self_attn.k_proj.weight", layer_idx),
-            format!("model.layers.{}.self_attn.v_proj.weight", layer_idx),
-            format!("model.layers.{}.self_attn.o_proj.weight", layer_idx),
-            format!("model.layers.{}.mlp.gate_proj.weight", layer_idx),
-            format!("model.layers.{}.mlp.up_proj.weight", layer_idx),
-            format!("model.layers.{}.mlp.down_proj.weight", layer_idx),
-            format!("model.layers.{}.input_layernorm.weight", layer_idx),
-            format!("model.layers.{}.post_attention_layernorm.weight", layer_idx),
-        ),
-        // GGUF pattern (dots replaced with underscores)
-        (
-            format!("blk.{}.attn_q.weight", layer_idx),
-            format!("blk.{}.attn_k.weight", layer_idx),
-            format!("blk.{}.attn_v.weight", layer_idx),
-            format!("blk.{}.attn_output.weight", layer_idx),
-            format!("blk.{}.ffn_gate.weight", layer_idx),
-            format!("blk.{}.ffn_up.weight", layer_idx),
-            format!("blk.{}.ffn_down.weight", layer_idx),
-            format!("blk.{}.attn_norm.weight", layer_idx),
-            format!("blk.{}.ffn_norm.weight", layer_idx),
-        ),
-    ];
+    let q = get_tensor(
+        tensors,
+        &format!("model.layers.{}.self_attn.q_proj.weight", layer_idx),
+        &format!("blk.{}.attn_q.weight", layer_idx),
+    )?;
+    let k = get_tensor(
+        tensors,
+        &format!("model.layers.{}.self_attn.k_proj.weight", layer_idx),
+        &format!("blk.{}.attn_k.weight", layer_idx),
+    )?;
+    let v = get_tensor(
+        tensors,
+        &format!("model.layers.{}.self_attn.v_proj.weight", layer_idx),
+        &format!("blk.{}.attn_v.weight", layer_idx),
+    )?;
+    let o = get_tensor(
+        tensors,
+        &format!("model.layers.{}.self_attn.o_proj.weight", layer_idx),
+        &format!("blk.{}.attn_output.weight", layer_idx),
+    )?;
+    let gate = get_tensor(
+        tensors,
+        &format!("model.layers.{}.mlp.gate_proj.weight", layer_idx),
+        &format!("blk.{}.ffn_gate.weight", layer_idx),
+    )?;
+    let up = get_tensor(
+        tensors,
+        &format!("model.layers.{}.mlp.up_proj.weight", layer_idx),
+        &format!("blk.{}.ffn_up.weight", layer_idx),
+    )?;
+    let down = get_tensor(
+        tensors,
+        &format!("model.layers.{}.mlp.down_proj.weight", layer_idx),
+        &format!("blk.{}.ffn_down.weight", layer_idx),
+    )?;
+    let attn_norm = get_tensor(
+        tensors,
+        &format!("model.layers.{}.input_layernorm.weight", layer_idx),
+        &format!("blk.{}.attn_norm.weight", layer_idx),
+    )?;
+    let ffn_norm = get_tensor(
+        tensors,
+        &format!("model.layers.{}.post_attention_layernorm.weight", layer_idx),
+        &format!("blk.{}.ffn_norm.weight", layer_idx),
+    )?;
 
-    // Try each pattern until we find matching tensors
-    for (q, k, v, o, gate, up, down, attn_norm, ffn_norm) in patterns {
-        if let (Some(q_buf), Some(k_buf), Some(v_buf), Some(o_buf),
-                Some(gate_buf), Some(up_buf), Some(down_buf),
-                Some(attn_norm_buf), Some(ffn_norm_buf)) = (
-            tensors.get(&q),
-            tensors.get(&k),
-            tensors.get(&v),
-            tensors.get(&o),
-            tensors.get(&gate),
-            tensors.get(&up),
-            tensors.get(&down),
-            tensors.get(&attn_norm),
-            tensors.get(&ffn_norm),
-        ) {
-            return Ok(TransformerBlock::new(
-                config.clone(),
-                q_buf.clone(),
-                k_buf.clone(),
-                v_buf.clone(),
-                o_buf.clone(),
-                gate_buf.clone(),
-                up_buf.clone(),
-                down_buf.clone(),
-                attn_norm_buf.clone(),
-                ffn_norm_buf.clone(),
-            ));
-        }
-    }
-
-    Err(format!("Could not find tensors for layer {}", layer_idx).into())
+    Ok(TransformerBlock::new(
+        config.clone(),
+        q.clone(),
+        k.clone(),
+        v.clone(),
+        o.clone(),
+        gate.clone(),
+        up.clone(),
+        down.clone(),
+        attn_norm.clone(),
+        ffn_norm.clone(),
+    ))
 }
 
 /// Generate text with periodic progress updates
@@ -210,26 +210,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Built {} transformer blocks", blocks.len());
 
     // Get embedding and output tensors
-    let embedding_patterns = vec!["model.embed_tokens.weight", "token_embd.weight", "tok_embeddings.weight"];
-    let token_embedding_table = embedding_patterns
-        .iter()
-        .find_map(|p| tensors.get(*p))
-        .ok_or("Could not find token embedding table")?
-        .clone();
+    let token_embedding_table =
+        get_tensor(&tensors, "model.embed_tokens.weight", "token_embd.weight")?.clone();
 
-    let output_norm_patterns = vec!["model.norm.weight", "output_norm.weight", "norm.weight"];
-    let output_norm_weight = output_norm_patterns
-        .iter()
-        .find_map(|p| tensors.get(*p))
-        .ok_or("Could not find output norm weight")?
-        .clone();
+    let output_norm_weight =
+        get_tensor(&tensors, "model.norm.weight", "output_norm.weight")?.clone();
 
-    let lm_head_patterns = vec!["lm_head.weight", "output.weight"];
-    let lm_head_weight = lm_head_patterns
-        .iter()
-        .find_map(|p| tensors.get(*p))
-        .ok_or("Could not find LM head weight")?
-        .clone();
+    let lm_head_weight = get_tensor(&tensors, "lm_head.weight", "output.weight")?.clone();
 
     // Create sampler with reasonable defaults for streaming/interactive use
     let sampler_config = SamplerConfig {

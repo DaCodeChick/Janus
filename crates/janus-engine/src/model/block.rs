@@ -12,7 +12,25 @@ use crate::compute::ops::{
     add_tensors, compute_attention, elementwise_mul, gemm, rmsnorm, rope, silu,
 };
 use crate::compute::pipeline_cache::PipelineCache;
-use crate::compute::{ComputeEngine, Result};
+use crate::compute::{ComputeEngine, ComputeError, Result};
+use std::collections::HashMap;
+
+/// Fetch a tensor by trying Safetensors name first, then GGUF fallback.
+pub fn get_tensor<'a>(
+    tensors: &'a HashMap<String, wgpu::Buffer>,
+    st_name: &str,
+    gguf_name: &str,
+) -> Result<&'a wgpu::Buffer> {
+    tensors
+        .get(st_name)
+        .or_else(|| tensors.get(gguf_name))
+        .ok_or_else(|| {
+            ComputeError::Other(format!(
+                "Tensor not found. Tried '{}' then '{}'.",
+                st_name, gguf_name
+            ))
+        })
+}
 
 /// Configuration for a transformer block
 #[derive(Debug, Clone)]

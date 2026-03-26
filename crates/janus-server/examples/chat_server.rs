@@ -24,6 +24,7 @@ use janus_engine::{
     HuggingFaceConfig, Model,
     ModelConfig, Sampler, SamplerConfig, Tokenizer, TransformerBlock, TransformerBlockConfig,
 };
+use janus_engine::model::block::get_tensor;
 use janus_server::{create_router, handlers::AppState};
 use std::collections::HashMap;
 use std::env;
@@ -50,69 +51,64 @@ fn build_transformer_block(
     layer_idx: u32,
     tensors: &HashMap<String, wgpu::Buffer>,
 ) -> Result<TransformerBlock, Box<dyn std::error::Error>> {
-    let patterns = vec![
-        (
-            format!("model.layers.{}.self_attn.q_proj.weight", layer_idx),
-            format!("model.layers.{}.self_attn.k_proj.weight", layer_idx),
-            format!("model.layers.{}.self_attn.v_proj.weight", layer_idx),
-            format!("model.layers.{}.self_attn.o_proj.weight", layer_idx),
-            format!("model.layers.{}.mlp.gate_proj.weight", layer_idx),
-            format!("model.layers.{}.mlp.up_proj.weight", layer_idx),
-            format!("model.layers.{}.mlp.down_proj.weight", layer_idx),
-            format!("model.layers.{}.input_layernorm.weight", layer_idx),
-            format!("model.layers.{}.post_attention_layernorm.weight", layer_idx),
-        ),
-        (
-            format!("blk.{}.attn_q.weight", layer_idx),
-            format!("blk.{}.attn_k.weight", layer_idx),
-            format!("blk.{}.attn_v.weight", layer_idx),
-            format!("blk.{}.attn_output.weight", layer_idx),
-            format!("blk.{}.ffn_gate.weight", layer_idx),
-            format!("blk.{}.ffn_up.weight", layer_idx),
-            format!("blk.{}.ffn_down.weight", layer_idx),
-            format!("blk.{}.attn_norm.weight", layer_idx),
-            format!("blk.{}.ffn_norm.weight", layer_idx),
-        ),
-    ];
+    let q = get_tensor(
+        tensors,
+        &format!("model.layers.{}.self_attn.q_proj.weight", layer_idx),
+        &format!("blk.{}.attn_q.weight", layer_idx),
+    )?;
+    let k = get_tensor(
+        tensors,
+        &format!("model.layers.{}.self_attn.k_proj.weight", layer_idx),
+        &format!("blk.{}.attn_k.weight", layer_idx),
+    )?;
+    let v = get_tensor(
+        tensors,
+        &format!("model.layers.{}.self_attn.v_proj.weight", layer_idx),
+        &format!("blk.{}.attn_v.weight", layer_idx),
+    )?;
+    let o = get_tensor(
+        tensors,
+        &format!("model.layers.{}.self_attn.o_proj.weight", layer_idx),
+        &format!("blk.{}.attn_output.weight", layer_idx),
+    )?;
+    let gate = get_tensor(
+        tensors,
+        &format!("model.layers.{}.mlp.gate_proj.weight", layer_idx),
+        &format!("blk.{}.ffn_gate.weight", layer_idx),
+    )?;
+    let up = get_tensor(
+        tensors,
+        &format!("model.layers.{}.mlp.up_proj.weight", layer_idx),
+        &format!("blk.{}.ffn_up.weight", layer_idx),
+    )?;
+    let down = get_tensor(
+        tensors,
+        &format!("model.layers.{}.mlp.down_proj.weight", layer_idx),
+        &format!("blk.{}.ffn_down.weight", layer_idx),
+    )?;
+    let attn_norm = get_tensor(
+        tensors,
+        &format!("model.layers.{}.input_layernorm.weight", layer_idx),
+        &format!("blk.{}.attn_norm.weight", layer_idx),
+    )?;
+    let ffn_norm = get_tensor(
+        tensors,
+        &format!("model.layers.{}.post_attention_layernorm.weight", layer_idx),
+        &format!("blk.{}.ffn_norm.weight", layer_idx),
+    )?;
 
-    for (q, k, v, o, gate, up, down, attn_norm, ffn_norm) in patterns {
-        if let (
-            Some(q_buf),
-            Some(k_buf),
-            Some(v_buf),
-            Some(o_buf),
-            Some(gate_buf),
-            Some(up_buf),
-            Some(down_buf),
-            Some(attn_norm_buf),
-            Some(ffn_norm_buf),
-        ) = (
-            tensors.get(&q),
-            tensors.get(&k),
-            tensors.get(&v),
-            tensors.get(&o),
-            tensors.get(&gate),
-            tensors.get(&up),
-            tensors.get(&down),
-            tensors.get(&attn_norm),
-            tensors.get(&ffn_norm),
-        ) {
-            return Ok(TransformerBlock::new(
-                config.clone(),
-                q_buf.clone(),
-                k_buf.clone(),
-                v_buf.clone(),
-                o_buf.clone(),
-                gate_buf.clone(),
-                up_buf.clone(),
-                down_buf.clone(),
-                attn_norm_buf.clone(),
-                ffn_norm_buf.clone(),
-            ));
-        }
-    }
-
-    Err(format!("Could not find tensors for layer {}", layer_idx).into())
+    Ok(TransformerBlock::new(
+        config.clone(),
+        q.clone(),
+        k.clone(),
+        v.clone(),
+        o.clone(),
+        gate.clone(),
+        up.clone(),
+        down.clone(),
+        attn_norm.clone(),
+        ffn_norm.clone(),
+    ))
 }
 
 #[tokio::main]
@@ -371,30 +367,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Extract embedding and output tensors
     println!("🔍 Extracting embedding and output tensors...");
-    let token_embedding_table = tensors
-        .get("token_embd.weight")
-        .or_else(|| tensors.get("model.embed_tokens.weight"))
-        .ok_or_else(|| {
-            eprintln!("❌ Could not find token embedding table");
-            "Could not find token embedding table"
+    let token_embedding_table = get_tensor(&tensors, "model.embed_tokens.weight", "token_embd.weight")
+        .map_err(|e| {
+            eprintln!("❌ Could not find token embedding table: {}", e);
+            e
         })?
         .clone();
 
-    let output_norm_weight = tensors
-        .get("output_norm.weight")
-        .or_else(|| tensors.get("model.norm.weight"))
-        .ok_or_else(|| {
-            eprintln!("❌ Could not find output normalization weight");
-            "Could not find output normalization weight"
+    let output_norm_weight = get_tensor(&tensors, "model.norm.weight", "output_norm.weight")
+        .map_err(|e| {
+            eprintln!("❌ Could not find output normalization weight: {}", e);
+            e
         })?
         .clone();
 
-    let lm_head_weight = tensors
-        .get("output.weight")
-        .or_else(|| tensors.get("lm_head.weight"))
-        .ok_or_else(|| {
-            eprintln!("❌ Could not find LM head weight");
-            "Could not find LM head weight"
+    let lm_head_weight = get_tensor(&tensors, "lm_head.weight", "output.weight")
+        .map_err(|e| {
+            eprintln!("❌ Could not find LM head weight: {}", e);
+            e
         })?
         .clone();
     println!("✅ Embedding and output tensors extracted");
