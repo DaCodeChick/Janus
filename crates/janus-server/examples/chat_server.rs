@@ -5,11 +5,11 @@
 //!
 //! If <model_path_or_dir> is a directory, it should contain:
 //!   - model.gguf or model.safetensors
-//!   - config.json
 //!   - tokenizer.json
 //!
 //! If <model_path_or_dir> is a file, the config.json and tokenizer.json
-//! should be in the same directory.
+//! should be in the same directory for Safetensors models.
+//! GGUF models do not require an external config.json.
 //!
 //! Examples:
 //!   cargo run --example chat_server ./models/llama-7b
@@ -25,6 +25,7 @@ use janus_engine::{
     ModelConfig, Sampler, SamplerConfig, Tokenizer, TransformerBlock, TransformerBlockConfig,
 };
 use janus_engine::model::block::get_tensor;
+use janus_engine::model::config::model_config_from_gguf_metadata;
 use janus_server::{create_router, handlers::AppState};
 use std::collections::HashMap;
 use std::env;
@@ -225,9 +226,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("🖥️  Using GPU: {} ({:?})", device_info.name, device_info.backend);
     println!();
 
+    // Load tokenizer
+    println!("🔤 Loading tokenizer...");
+    let tokenizer = match Tokenizer::from_file(&tokenizer_path) {
+        Ok(tok) => {
+            println!("✅ Tokenizer loaded ({} vocab size)", tok.vocab_size());
+            tok
+        }
+        Err(e) => {
+            eprintln!("❌ Failed to load tokenizer: {}", e);
+            return Err(e.into());
+        }
+    };
+    println!();
+
     // Load model file
     println!("📥 Loading model weights...");
-    let tensors = if model_path.extension().and_then(|s| s.to_str()) == Some("gguf") {
+    let extension = model_path.extension().and_then(|s| s.to_str());
+    let (tensors, model_config) = if extension == Some("gguf") {
         println!("   Format: GGUF");
         let model_loader = match GGUFLoader::from_file(&model_path) {
             Ok(loader) => {
@@ -239,25 +255,39 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 return Err(e.into());
             }
         };
+
+        let model_config = model_config_from_gguf_metadata(
+            model_loader.gguf_metadata(),
+            tokenizer.vocab_size() as u32,
+        )
+        .map_err(|e| format!("Failed to build model config from GGUF metadata: {}", e))?;
         
         println!("🔄 Allocating tensors to GPU memory...");
         match engine.allocate_tensors(&model_loader) {
             Ok(t) => {
                 println!("✅ Tensors allocated to GPU ({} tensors)", t.len());
-                t
+                (t, model_config)
             }
             Err(e) => {
                 eprintln!("❌ Failed to allocate tensors: {}", e);
                 return Err(e.into());
             }
         }
-    } else if model_path
-        .extension()
-        .and_then(|s| s.to_str())
-        .map(|s| s == "safetensors")
-        .unwrap_or(false)
-    {
+    } else if extension == Some("safetensors") {
         println!("   Format: Safetensors");
+        println!("⚙️  Loading model configuration...");
+        let hf_config = match HuggingFaceConfig::from_file(&config_path) {
+            Ok(cfg) => {
+                println!("✅ Config loaded successfully");
+                cfg
+            }
+            Err(e) => {
+                eprintln!("❌ Failed to load config: {}", e);
+                return Err(e.into());
+            }
+        };
+        let model_config: ModelConfig = (&hf_config).into();
+
         let model_loader = match SafetensorsLoader::from_file(&model_path) {
             Ok(loader) => {
                 println!("✅ Safetensors file parsed successfully");
@@ -273,7 +303,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         match engine.allocate_tensors(&model_loader) {
             Ok(t) => {
                 println!("✅ Tensors allocated to GPU ({} tensors)", t.len());
-                t
+                (t, model_config)
             }
             Err(e) => {
                 eprintln!("❌ Failed to allocate tensors: {}", e);
@@ -290,36 +320,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     println!();
 
-    // Load config
-    println!("⚙️  Loading model configuration...");
-    let hf_config = match HuggingFaceConfig::from_file(&config_path) {
-        Ok(cfg) => {
-            println!("✅ Config loaded successfully");
-            cfg
-        }
-        Err(e) => {
-            eprintln!("❌ Failed to load config: {}", e);
-            return Err(e.into());
-        }
-    };
-    let model_config: ModelConfig = (&hf_config).into();
+    // Show selected model configuration
+    println!("⚙️  Model configuration:");
     println!("   Layers: {}", model_config.num_layers);
     println!("   Hidden dim: {}", model_config.hidden_dim);
     println!("   Heads: {}", model_config.num_heads);
-    println!();
-
-    // Load tokenizer
-    println!("🔤 Loading tokenizer...");
-    let tokenizer = match Tokenizer::from_file(&tokenizer_path) {
-        Ok(tok) => {
-            println!("✅ Tokenizer loaded ({} vocab size)", tok.vocab_size());
-            tok
-        }
-        Err(e) => {
-            eprintln!("❌ Failed to load tokenizer: {}", e);
-            return Err(e.into());
-        }
-    };
     println!();
 
     // Create sampler with reasonable defaults for chat

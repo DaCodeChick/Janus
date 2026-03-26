@@ -8,6 +8,8 @@ use std::fs;
 use std::path::Path;
 use thiserror::Error;
 
+use crate::formats::{GGUFMetadata, MetadataValue};
+
 /// Errors that can occur when loading model configuration
 #[derive(Error, Debug)]
 pub enum ConfigError {
@@ -25,6 +27,9 @@ pub enum ConfigError {
 
     #[error("Unsupported architecture: {architecture}\n\nSupported architectures:\n  - LlamaForCausalLM (LLaMA, Mistral, Vicuna)\n  - MistralForCausalLM (Mistral)\n  - GPTNeoXForCausalLM (TinyLlama, Pythia)\n  - PhiForCausalLM (Microsoft Phi)\n  - Phi3ForCausalLM (Microsoft Phi-3)\n  - GemmaForCausalLM (Google Gemma)\n  - Gemma2ForCausalLM (Google Gemma 2)\n  - QWenLMHeadModel (Alibaba Qwen)\n  - Qwen2ForCausalLM (Alibaba Qwen 2)\n\nGot architecture: {architecture}\n\nNote: Most modern decoder-only transformer architectures use compatible components\n(RoPE, RMSNorm, GQA) and should work with LLaMA-style inference.\n\nSuggestions:\n  - Check if this architecture is supported in the latest Janus version\n  - Try using a compatible config (many models are LLaMA-compatible)\n  - File an issue on GitHub if you need support for this architecture")]
     UnsupportedArchitecture { architecture: String },
+
+    #[error("Missing required GGUF metadata key: {key}\n\nSuggestions:\n  - Verify this GGUF file contains full architecture metadata\n  - Ensure the model was exported with a recent GGUF version\n  - Check if this is a supported architecture")]
+    MissingGgufMetadata { key: String },
 }
 
 /// Result type for config operations
@@ -282,6 +287,125 @@ impl From<&HuggingFaceConfig> for crate::model::ModelConfig {
             batch_size: 1, // Default to single-sequence inference
         }
     }
+}
+
+fn metadata_as_u32(metadata: &GGUFMetadata, key: &str) -> Result<u32> {
+    let value = metadata
+        .metadata
+        .get(key)
+        .ok_or_else(|| ConfigError::MissingGgufMetadata {
+            key: key.to_string(),
+        })?;
+
+    let as_u64 = match value {
+        MetadataValue::UInt8(v) => *v as u64,
+        MetadataValue::UInt16(v) => *v as u64,
+        MetadataValue::UInt32(v) => *v as u64,
+        MetadataValue::UInt64(v) => *v,
+        MetadataValue::Int8(v) if *v >= 0 => *v as u64,
+        MetadataValue::Int16(v) if *v >= 0 => *v as u64,
+        MetadataValue::Int32(v) if *v >= 0 => *v as u64,
+        MetadataValue::Int64(v) if *v >= 0 => *v as u64,
+        _ => {
+            return Err(ConfigError::InvalidConfig(format!(
+                "GGUF metadata '{}' is not a positive integer",
+                key
+            )));
+        }
+    };
+
+    u32::try_from(as_u64).map_err(|_| {
+        ConfigError::InvalidConfig(format!("GGUF metadata '{}' does not fit in u32", key))
+    })
+}
+
+fn metadata_as_f32(metadata: &GGUFMetadata, key: &str) -> Result<f32> {
+    let value = metadata
+        .metadata
+        .get(key)
+        .ok_or_else(|| ConfigError::MissingGgufMetadata {
+            key: key.to_string(),
+        })?;
+
+    match value {
+        MetadataValue::Float32(v) => Ok(*v),
+        MetadataValue::Float64(v) => Ok(*v as f32),
+        MetadataValue::Int8(v) => Ok(*v as f32),
+        MetadataValue::Int16(v) => Ok(*v as f32),
+        MetadataValue::Int32(v) => Ok(*v as f32),
+        MetadataValue::Int64(v) => Ok(*v as f32),
+        MetadataValue::UInt8(v) => Ok(*v as f32),
+        MetadataValue::UInt16(v) => Ok(*v as f32),
+        MetadataValue::UInt32(v) => Ok(*v as f32),
+        MetadataValue::UInt64(v) => Ok(*v as f32),
+        _ => Err(ConfigError::InvalidConfig(format!(
+            "GGUF metadata '{}' is not numeric",
+            key
+        ))),
+    }
+}
+
+fn metadata_array_len_as_u32(metadata: &GGUFMetadata, key: &str) -> Option<u32> {
+    match metadata.metadata.get(key) {
+        Some(MetadataValue::Array(values)) => u32::try_from(values.len()).ok(),
+        _ => None,
+    }
+}
+
+fn metadata_string(metadata: &GGUFMetadata, key: &str) -> Option<String> {
+    match metadata.metadata.get(key) {
+        Some(MetadataValue::String(v)) => Some(v.clone()),
+        _ => None,
+    }
+}
+
+/// Build internal ModelConfig directly from GGUF metadata.
+pub fn model_config_from_gguf_metadata(
+    metadata: &GGUFMetadata,
+    tokenizer_vocab_size: u32,
+) -> Result<crate::model::ModelConfig> {
+    let architecture =
+        metadata_string(metadata, "general.architecture").unwrap_or_else(|| "llama".to_string());
+
+    let hidden_dim = metadata_as_u32(metadata, &format!("{}.embedding_length", architecture))?;
+    let num_layers = metadata_as_u32(metadata, &format!("{}.block_count", architecture))?;
+    let num_heads = metadata_as_u32(metadata, &format!("{}.attention.head_count", architecture))?;
+    let num_kv_heads = match metadata_as_u32(
+        metadata,
+        &format!("{}.attention.head_count_kv", architecture),
+    ) {
+        Ok(v) => v,
+        Err(ConfigError::MissingGgufMetadata { .. }) => num_heads,
+        Err(e) => return Err(e),
+    };
+    let ffn_dim = metadata_as_u32(metadata, &format!("{}.feed_forward_length", architecture))?;
+    let max_seq_len = metadata_as_u32(metadata, &format!("{}.context_length", architecture))?;
+    let rms_norm_eps = metadata_as_f32(
+        metadata,
+        &format!("{}.attention.layer_norm_rms_epsilon", architecture),
+    )?;
+
+    let vocab_size = match metadata_as_u32(metadata, &format!("{}.vocab_size", architecture)) {
+        Ok(v) => v,
+        Err(ConfigError::MissingGgufMetadata { .. }) => {
+            metadata_array_len_as_u32(metadata, "tokenizer.ggml.tokens")
+                .unwrap_or(tokenizer_vocab_size)
+        }
+        Err(e) => return Err(e),
+    };
+
+    Ok(crate::model::ModelConfig {
+        hidden_dim,
+        num_layers,
+        num_heads,
+        num_kv_heads,
+        head_dim: hidden_dim / num_heads,
+        ffn_dim,
+        vocab_size,
+        max_seq_len,
+        rms_norm_eps,
+        batch_size: 1,
+    })
 }
 
 #[cfg(test)]
