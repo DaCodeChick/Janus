@@ -133,6 +133,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         (model_file, config_path, tokenizer, prompt.clone())
     } else if args.len() == 4 {
         // File mode (GGUF): <model.gguf> <tokenizer.json> "<prompt>"
+        // tokenizer.json argument is accepted for backward compatibility but ignored.
         (
             PathBuf::from(&args[1]),
             None,
@@ -151,7 +152,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         eprintln!("Usage (directory mode):");
         eprintln!("  cargo run --example inference <model_dir> \"<prompt>\"");
         eprintln!("\nUsage (file mode):");
-        eprintln!("  cargo run --example inference <model.gguf> <tokenizer.json> \"<prompt>\"");
+        eprintln!("  cargo run --example inference <model.gguf> <tokenizer.json> \"<prompt>\"  # tokenizer.json ignored for GGUF");
         eprintln!("  cargo run --example inference <model.safetensors> <config.json> <tokenizer.json> \"<prompt>\"");
         eprintln!("\nExamples:");
         eprintln!("  cargo run --example inference models/llama-7b \"Hello, world!\"");
@@ -163,12 +164,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== Janus Engine Inference Example ===\n");
     println!("Model file: {:?}", model_path);
     println!("Config: {:?}", config_path);
-    println!("Tokenizer: {:?}", tokenizer_path);
+    if model_path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.eq_ignore_ascii_case("gguf"))
+        .unwrap_or(false)
+    {
+        println!("Tokenizer: embedded GGUF metadata");
+    } else {
+        println!("Tokenizer: {:?}", tokenizer_path);
+    }
     println!("Prompt: \"{}\"\n", prompt);
 
     // Load tokenizer
     println!("\n>> Loading tokenizer...");
-    let tokenizer = Tokenizer::from_file(tokenizer_path.to_str().unwrap())?;
+    let loader = GgufFile::from_file(&model_path)?;
+    let tokenizer = Tokenizer::from_gguf_metadata(loader.gguf_metadata())?;
     println!("   Tokenizer loaded successfully");
 
     // Initialize GPU compute engine

@@ -17,10 +17,11 @@ use std::collections::HashMap;
 use std::env;
 use std::path::PathBuf;
 use janus_engine::{
-    ComputeEngine, GgufLoader, SafetensorsLoader, HuggingFaceConfig,
-    Model, ModelConfig, Tokenizer, Sampler, SamplerConfig, TransformerBlock, TransformerBlockConfig
+    ComputeEngine, GgufLoader, SafetensorsLoader, Model, ModelConfig, Tokenizer, Sampler,
+    SamplerConfig, TransformerBlock, TransformerBlockConfig,
 };
 use janus_engine::model::block::get_tensor;
+use janus_engine::model::config::model_config_from_gguf_metadata;
 
 /// Build TransformerBlock from tensor map
 fn build_transformer_block(
@@ -166,41 +167,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config_path = model_dir.join("config.json");
     let tokenizer_path = model_dir.join("tokenizer.json");
 
-    if !config_path.exists() {
-        return Err(format!("config.json not found in {}", model_dir.display()).into());
-    }
-    if !tokenizer_path.exists() {
-        return Err(format!("tokenizer.json not found in {}", model_dir.display()).into());
-    }
-
     // Initialize GPU compute engine
     println!(">> Initializing GPU compute engine...");
     let engine = ComputeEngine::new().await?;
     let info = engine.adapter_info();
     println!("   Using GPU: {} ({:?})", info.name, info.backend);
-
-    // Load configuration
-    println!("\n>> Loading model configuration...");
-    let hf_config = HuggingFaceConfig::from_file(&config_path)?;
-    let mut model_config: ModelConfig = (&hf_config).into();
-    
-    // Set batch size for batched inference
-    model_config.batch_size = batch_size;
-    
-    println!("   Architecture: {:?}", hf_config.architectures);
-    println!("   Hidden dim: {}", model_config.hidden_dim);
-    println!("   Layers: {}", model_config.num_layers);
-    println!("   Attention heads: {}", model_config.num_heads);
-    println!("   KV heads: {}", model_config.num_kv_heads);
-    println!("   Batch size: {}", model_config.batch_size);
-
-    // Load tokenizer
-    println!("\n>> Loading tokenizer...");
-    let tokenizer = Tokenizer::from_file(&tokenizer_path)?;
-    println!("   Vocab size: {}", tokenizer.vocab_size());
-    
-    // Update vocab size in config
-    model_config.vocab_size = tokenizer.vocab_size() as u32;
 
     // Load model weights
     println!("\n>> Loading model weights...");
@@ -209,18 +180,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .and_then(|e| e.to_str())
         .unwrap_or("");
     
-    let tensors = match extension {
+    let (tokenizer, mut model_config, tensors) = match extension {
         "gguf" => {
             let loader = GgufLoader::from_file(&model_file)?;
             println!("   Format: GGUF");
+            println!("\n>> Loading tokenizer from embedded GGUF metadata...");
+            let tokenizer = Tokenizer::from_gguf_metadata(loader.gguf_metadata())?;
+            println!("   Vocab size: {}", tokenizer.vocab_size());
+            println!("\n>> Loading model configuration from GGUF metadata...");
+            let mut model_config =
+                model_config_from_gguf_metadata(loader.gguf_metadata(), tokenizer.vocab_size() as u32)?;
+            model_config.batch_size = batch_size;
+            println!("   Hidden dim: {}", model_config.hidden_dim);
+            println!("   Layers: {}", model_config.num_layers);
+            println!("   Attention heads: {}", model_config.num_heads);
+            println!("   KV heads: {}", model_config.num_kv_heads);
+            println!("   Batch size: {}", model_config.batch_size);
             println!("   Allocating tensors to GPU VRAM...");
-            engine.allocate_tensors(&loader)?
+            let tensors = engine.allocate_tensors(&loader)?;
+            (tokenizer, model_config, tensors)
         }
         "safetensors" => {
-            let loader = SafetensorsLoader::from_file(&model_file)?;
-            println!("   Format: Safetensors");
-            println!("   Allocating tensors to GPU VRAM...");
-            engine.allocate_tensors(&loader)?
+            return Err("safetensors mode is unsupported without tokenizer.json/native metadata".into());
         }
         _ => {
             return Err(format!("Unsupported model file format: {}", extension).into());

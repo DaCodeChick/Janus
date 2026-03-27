@@ -2,7 +2,7 @@
 
 use super::config::CacheCompressionConfig;
 use crate::compute::engine::ComputeEngine;
-use crate::compute::error::Result;
+use crate::compute::error::{ComputeError, Result};
 use crate::compute::pipeline_cache::PipelineCache;
 use wgpu::util::DeviceExt;
 
@@ -57,6 +57,36 @@ pub struct KVCache {
 }
 
 impl KVCache {
+    fn checked_cache_size_bytes(
+        batch_size: u32,
+        num_layers: u32,
+        max_seq_len: u32,
+        num_kv_heads: u32,
+        head_dim: u32,
+    ) -> Result<u64> {
+        let elems = u64::from(batch_size)
+            .checked_mul(u64::from(num_layers))
+            .and_then(|v| v.checked_mul(u64::from(max_seq_len)))
+            .and_then(|v| v.checked_mul(u64::from(num_kv_heads)))
+            .and_then(|v| v.checked_mul(u64::from(head_dim)))
+            .ok_or_else(|| {
+                ComputeError::InvalidDimensions(format!(
+                    "KV cache element count overflow: batch_size={} num_layers={} max_seq_len={} num_kv_heads={} head_dim={}",
+                    batch_size, num_layers, max_seq_len, num_kv_heads, head_dim
+                ))
+            })?;
+
+        elems
+            .checked_mul(std::mem::size_of::<f32>() as u64)
+            .ok_or_else(|| {
+                ComputeError::InvalidDimensions(format!(
+                    "KV cache byte-size overflow: elements={} bytes_per_element={}",
+                    elems,
+                    std::mem::size_of::<f32>()
+                ))
+            })
+    }
+
     /// Create a new KV cache with the specified dimensions
     ///
     /// # Arguments
@@ -112,9 +142,48 @@ impl KVCache {
     ) -> Result<Self> {
         let device = engine.device();
 
-        // Calculate total size in bytes (includes batch dimension)
-        let cache_size = (batch_size * num_layers * max_seq_len * num_kv_heads * head_dim) as u64
-            * std::mem::size_of::<f32>() as u64;
+        // Calculate total size in bytes (includes batch dimension) with overflow checks.
+        let cache_size = Self::checked_cache_size_bytes(
+            batch_size,
+            num_layers,
+            max_seq_len,
+            num_kv_heads,
+            head_dim,
+        )?;
+
+        let total_kv_bytes = cache_size.checked_mul(2).ok_or_else(|| {
+            ComputeError::InvalidDimensions(format!(
+                "KV cache total key+value size overflow: key_or_value_bytes={}",
+                cache_size
+            ))
+        })?;
+
+        let limits = device.limits();
+        if cache_size > u64::from(limits.max_storage_buffer_binding_size) {
+            return Err(ComputeError::InvalidDimensions(format!(
+                "KV cache buffer too large for device: {} bytes exceeds max_storage_buffer_binding_size {} (batch_size={} num_layers={} max_seq_len={} num_kv_heads={} head_dim={})",
+                cache_size,
+                limits.max_storage_buffer_binding_size,
+                batch_size,
+                num_layers,
+                max_seq_len,
+                num_kv_heads,
+                head_dim
+            )));
+        }
+
+        if cache_size > limits.max_buffer_size {
+            return Err(ComputeError::InvalidDimensions(format!(
+                "KV cache buffer too large for device: {} bytes exceeds max_buffer_size {} (batch_size={} num_layers={} max_seq_len={} num_kv_heads={} head_dim={})",
+                cache_size,
+                limits.max_buffer_size,
+                batch_size,
+                num_layers,
+                max_seq_len,
+                num_kv_heads,
+                head_dim
+            )));
+        }
 
         if compression_config.enabled {
             tracing::info!(
@@ -124,7 +193,7 @@ impl KVCache {
                 max_seq_len,
                 num_kv_heads,
                 head_dim,
-                (cache_size * 2) as f64 / (1024.0 * 1024.0),
+                total_kv_bytes as f64 / (1024.0 * 1024.0),
                 compression_config.uncompressed_window,
                 compression_config.compression_ratio
             );
@@ -136,7 +205,7 @@ impl KVCache {
                 max_seq_len,
                 num_kv_heads,
                 head_dim,
-                (cache_size * 2) as f64 / (1024.0 * 1024.0)
+                total_kv_bytes as f64 / (1024.0 * 1024.0)
             );
         }
 
@@ -495,12 +564,13 @@ impl KVCache {
         }
 
         // Calculate buffer size
-        let cache_size = (self.batch_size
-            * self.num_layers
-            * self.max_seq_len
-            * self.num_kv_heads
-            * self.head_dim) as u64
-            * std::mem::size_of::<f32>() as u64;
+        let cache_size = Self::checked_cache_size_bytes(
+            self.batch_size,
+            self.num_layers,
+            self.max_seq_len,
+            self.num_kv_heads,
+            self.head_dim,
+        )?;
 
         // Copy key cache
         encoder.copy_buffer_to_buffer(&source.key_cache, 0, &self.key_cache, 0, cache_size);

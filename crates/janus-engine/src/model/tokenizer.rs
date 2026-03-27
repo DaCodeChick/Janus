@@ -1,10 +1,19 @@
-//! Tokenizer for encoding and decoding text
-//!
-//! This module provides a wrapper around the HuggingFace `tokenizers` library
-//! for converting between text and token IDs.
+//! Native GGUF tokenizer for Llama-family BPE vocabularies.
 
-use std::path::Path;
+use std::collections::HashMap;
+use std::sync::LazyLock;
+
+use fancy_regex::Regex;
 use thiserror::Error;
+
+use crate::formats::{GgufMetadata, MetadataValue};
+
+static LLAMA3_SPLIT_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}{1,3}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+",
+    )
+    .expect("valid llama3 split regex")
+});
 
 /// Tokenizer errors
 #[derive(Error, Debug)]
@@ -20,347 +29,312 @@ pub enum TokenizerError {
 
     #[error("IO error: {0}")]
     IoError(#[from] std::io::Error),
+
+    #[error("Invalid GGUF tokenizer metadata: {0}")]
+    InvalidGgufMetadata(String),
 }
 
 /// Result type for tokenizer operations
 pub type Result<T> = std::result::Result<T, TokenizerError>;
 
-/// Tokenizer for text encoding and decoding
-///
-/// This wraps the HuggingFace tokenizers library to provide:
-/// - Text → Token IDs encoding
-/// - Token IDs → Text decoding
-/// - Vocabulary information
-pub struct Tokenizer {
-    tokenizer: tokenizers::Tokenizer,
-    vocab_size: usize,
+/// Native GGUF tokenizer.
+pub struct GgufTokenizer {
+    /// Raw token bytes -> token id
+    vocab: HashMap<Vec<u8>, u32>,
+    /// token id -> raw token bytes
+    id_to_token: Vec<Vec<u8>>,
+    /// Merge score map for merged token bytes
+    scores: HashMap<Vec<u8>, f32>,
 }
 
-impl Tokenizer {
-    const LLAMA_BOS_TOKEN_ID: u32 = 1;
-    const LLAMA_DUMMY_PREFIX_SPACE_ID: u32 = 29_871;
-    const MAX_SPECIAL_TOKEN_LITERAL_CHARS: usize = 256;
+impl GgufTokenizer {
+    const LLAMA3_BOS_TOKEN_ID: u32 = 128_000;
+    const LLAMA3_EOT_TOKEN_ID: u32 = 128_009;
 
-    /// Load a tokenizer from a tokenizer.json file
-    ///
-    /// The tokenizer.json file should be in HuggingFace tokenizers format,
-    /// typically found alongside model weights (e.g., from LLaMA, Mistral).
-    ///
-    /// # Arguments
-    /// * `path` - Path to the tokenizer.json file
-    ///
-    /// # Returns
-    /// A new Tokenizer instance
-    ///
-    /// # Example
-    /// ```no_run
-    /// use janus_engine::model::Tokenizer;
-    ///
-    /// let tokenizer = Tokenizer::from_file("models/llama-7b/tokenizer.json")
-    ///     .expect("Failed to load tokenizer");
-    /// ```
-    pub fn from_file<P: AsRef<Path>>(path: P) -> Result<Self> {
-        let tokenizer = tokenizers::Tokenizer::from_file(path)
-            .map_err(|e| TokenizerError::LoadFailed(e.to_string()))?;
+    /// Loading from tokenizer.json is no longer supported.
+    pub fn from_file<P: AsRef<std::path::Path>>(_path: P) -> Result<Self> {
+        Err(TokenizerError::LoadFailed(
+            "tokenizer.json loading removed; use GGUF metadata tokenizer".to_string(),
+        ))
+    }
 
-        let vocab_size = tokenizer.get_vocab_size(true);
+    /// Build tokenizer from GGUF embedded metadata.
+    pub fn from_gguf_metadata(metadata: &GgufMetadata) -> Result<Self> {
+        let tokens = Self::metadata_token_bytes_array(metadata, "tokenizer.ggml.tokens")?;
+        if tokens.is_empty() {
+            return Err(TokenizerError::InvalidGgufMetadata(
+                "tokenizer.ggml.tokens is empty".to_string(),
+            ));
+        }
 
-        tracing::info!("Loaded tokenizer with vocabulary size: {}", vocab_size);
+        let mut scores =
+            Self::metadata_f32_array(metadata, "tokenizer.ggml.scores").unwrap_or_default();
+        if scores.len() < tokens.len() {
+            scores.resize(tokens.len(), 0.0);
+        } else if scores.len() > tokens.len() {
+            scores.truncate(tokens.len());
+        }
+
+        let mut vocab = HashMap::with_capacity(tokens.len());
+        let mut id_to_token = Vec::with_capacity(tokens.len());
+        let mut score_map = HashMap::with_capacity(tokens.len());
+
+        for (id, tok) in tokens.into_iter().enumerate() {
+            let token_id = id as u32;
+            vocab.insert(tok.clone(), token_id);
+            score_map.insert(tok.clone(), scores[id]);
+            id_to_token.push(tok);
+        }
+
+        tracing::info!(
+            "Loaded native GGUF tokenizer with vocabulary size: {}",
+            id_to_token.len()
+        );
 
         Ok(Self {
-            tokenizer,
-            vocab_size,
+            vocab,
+            id_to_token,
+            scores: score_map,
         })
     }
 
-    /// Encode text into token IDs
+    /// Encode text into token IDs.
     ///
-    /// # Arguments
-    /// * `text` - The text to encode
-    /// * `add_special_tokens` - Whether to add special tokens (BOS, EOS, etc.)
-    ///
-    /// # Returns
-    /// Vector of token IDs
-    ///
-    /// # Example
-    /// ```no_run
-    /// # use janus_engine::model::Tokenizer;
-    /// # let tokenizer = Tokenizer::from_file("tokenizer.json").unwrap();
-    /// let tokens = tokenizer.encode("Hello, world!", true).unwrap();
-    /// println!("Tokens: {:?}", tokens);
-    /// ```
+    /// Uses Llama 3 pre-tokenization regex followed by byte-level BPE merges.
     pub fn encode(&self, text: &str, add_special_tokens: bool) -> Result<Vec<u32>> {
-        // Fast path: no embedded special tokens in the input text.
-        if !self.contains_embedded_special_tokens(text) {
-            let encoding = self
-                .tokenizer
-                .encode(text, false)
-                .map_err(|e| TokenizerError::EncodeFailed(e.to_string()))?;
-
-            let mut token_ids = encoding.get_ids().to_vec();
-            if add_special_tokens {
-                let bos_token_id = self.bos_token_id().unwrap_or(Self::LLAMA_BOS_TOKEN_ID);
-                if token_ids.first() != Some(&bos_token_id) {
-                    token_ids.insert(0, bos_token_id);
-                }
-            }
-
-            return Ok(token_ids);
-        }
-
-        let mut token_ids = Vec::new();
-        let mut segment_start = 0;
-        let mut cursor = 0;
-
-        while cursor < text.len() {
-            if let Some((special_id, special_len)) = self.special_token_match(&text[cursor..]) {
-                if segment_start < cursor {
-                    let chunk = &text[segment_start..cursor];
-                    let mut chunk_ids = self
-                        .tokenizer
-                        .encode(chunk, false)
-                        .map_err(|e| TokenizerError::EncodeFailed(e.to_string()))?
-                        .get_ids()
-                        .to_vec();
-
-                    if segment_start > 0
-                        && chunk_ids.first() == Some(&Self::LLAMA_DUMMY_PREFIX_SPACE_ID)
-                        && !chunk.starts_with(' ')
-                    {
-                        chunk_ids.remove(0);
-                    }
-
-                    token_ids.extend_from_slice(&chunk_ids);
-                }
-
-                token_ids.push(special_id);
-                cursor += special_len;
-                segment_start = cursor;
-                continue;
-            }
-
-            let next_char_len = text[cursor..].chars().next().map_or(1, char::len_utf8);
-            cursor += next_char_len;
-        }
-
-        if segment_start < text.len() {
-            let chunk = &text[segment_start..];
-            let mut chunk_ids = self
-                .tokenizer
-                .encode(chunk, false)
-                .map_err(|e| TokenizerError::EncodeFailed(e.to_string()))?
-                .get_ids()
-                .to_vec();
-
-            if segment_start > 0
-                && chunk_ids.first() == Some(&Self::LLAMA_DUMMY_PREFIX_SPACE_ID)
-                && !chunk.starts_with(' ')
-            {
-                chunk_ids.remove(0);
-            }
-
-            token_ids.extend_from_slice(&chunk_ids);
-        }
+        let mut out = Vec::new();
 
         if add_special_tokens {
-            let bos_token_id = self.bos_token_id().unwrap_or(Self::LLAMA_BOS_TOKEN_ID);
-            if token_ids.first() != Some(&bos_token_id) {
-                token_ids.insert(0, bos_token_id);
-            }
+            out.push(Self::LLAMA3_BOS_TOKEN_ID);
         }
 
-        Ok(token_ids)
+        for mat in LLAMA3_SPLIT_RE.find_iter(text) {
+            let chunk = mat
+                .map_err(|e| TokenizerError::EncodeFailed(format!("regex match failure: {e}")))?
+                .as_str();
+            self.encode_chunk(chunk.as_bytes(), &mut out)?;
+        }
+
+        Ok(out)
     }
 
-    fn contains_embedded_special_tokens(&self, text: &str) -> bool {
-        let mut cursor = 0;
-        while cursor < text.len() {
-            if self.special_token_match(&text[cursor..]).is_some() {
-                return true;
-            }
-
-            let next_char_len = text[cursor..].chars().next().map_or(1, char::len_utf8);
-            cursor += next_char_len;
+    fn encode_chunk(&self, bytes: &[u8], out: &mut Vec<u32>) -> Result<()> {
+        if bytes.is_empty() {
+            return Ok(());
         }
 
-        false
-    }
+        // Start from byte-level atoms (must exist in vocab for pure byte fallback).
+        let mut parts: Vec<Vec<u8>> = bytes.iter().map(|b| vec![*b]).collect();
 
-    fn special_token_match(&self, input: &str) -> Option<(u32, usize)> {
-        let mut best_match: Option<(u32, usize)> = None;
-
-        if let Some((candidate, len)) = Self::angle_bracket_pipe_candidate(input) {
-            if let Some(id) = self.special_token_id(candidate) {
-                best_match = Some((id, len));
+        loop {
+            if parts.len() < 2 {
+                break;
             }
-        }
 
-        if let Some((candidate, len)) = Self::angle_bracket_candidate(input) {
-            if let Some(id) = self.special_token_id(candidate) {
-                match best_match {
-                    Some((_, best_len)) if best_len >= len => {}
-                    _ => best_match = Some((id, len)),
+            let mut best_idx = None;
+            let mut best_score = f32::NEG_INFINITY;
+
+            for i in 0..(parts.len() - 1) {
+                let mut merged = Vec::with_capacity(parts[i].len() + parts[i + 1].len());
+                merged.extend_from_slice(&parts[i]);
+                merged.extend_from_slice(&parts[i + 1]);
+
+                if self.vocab.contains_key(&merged) {
+                    let score = self.scores.get(&merged).copied().unwrap_or(0.0);
+                    if score > best_score {
+                        best_score = score;
+                        best_idx = Some(i);
+                    }
                 }
             }
+
+            let Some(i) = best_idx else {
+                break;
+            };
+
+            let mut merged = Vec::with_capacity(parts[i].len() + parts[i + 1].len());
+            merged.extend_from_slice(&parts[i]);
+            merged.extend_from_slice(&parts[i + 1]);
+            parts[i] = merged;
+            parts.remove(i + 1);
         }
 
-        if let Some((candidate, len)) = Self::square_bracket_candidate(input) {
-            if let Some(id) = self.special_token_id(candidate) {
-                match best_match {
-                    Some((_, best_len)) if best_len >= len => {}
-                    _ => best_match = Some((id, len)),
-                }
+        for part in parts {
+            if let Some(id) = self.vocab.get(&part) {
+                out.push(*id);
+            } else {
+                return Err(TokenizerError::EncodeFailed(format!(
+                    "missing byte/token in vocab during BPE encode: {:?}",
+                    part
+                )));
             }
         }
 
-        best_match
+        Ok(())
     }
 
-    fn special_token_id(&self, token: &str) -> Option<u32> {
-        let id = self.tokenizer.token_to_id(token)?;
-        if self.tokenizer.id_to_token(id).as_deref() == Some(token) {
-            Some(id)
-        } else {
-            None
-        }
-    }
-
-    fn angle_bracket_pipe_candidate(input: &str) -> Option<(&str, usize)> {
-        if !input.starts_with("<|") {
-            return None;
-        }
-
-        let end_rel = input[2..].find("|>")?;
-        let len = 2 + end_rel + 2;
-        if len > Self::MAX_SPECIAL_TOKEN_LITERAL_CHARS {
-            return None;
-        }
-
-        Some((&input[..len], len))
-    }
-
-    fn angle_bracket_candidate(input: &str) -> Option<(&str, usize)> {
-        if !input.starts_with('<') {
-            return None;
-        }
-
-        let end_rel = input[1..].find('>')?;
-        let len = 1 + end_rel + 1;
-        if len > Self::MAX_SPECIAL_TOKEN_LITERAL_CHARS {
-            return None;
-        }
-
-        Some((&input[..len], len))
-    }
-
-    fn square_bracket_candidate(input: &str) -> Option<(&str, usize)> {
-        if !input.starts_with('[') {
-            return None;
-        }
-
-        let end_rel = input[1..].find(']')?;
-        let len = 1 + end_rel + 1;
-        if len > Self::MAX_SPECIAL_TOKEN_LITERAL_CHARS {
-            return None;
-        }
-
-        Some((&input[..len], len))
-    }
-
-    /// Decode a single token ID into text
-    ///
-    /// # Arguments
-    /// * `token_id` - The token ID to decode
-    ///
-    /// # Returns
-    /// The decoded text string
-    ///
-    /// # Example
-    /// ```no_run
-    /// # use janus_engine::model::Tokenizer;
-    /// # let tokenizer = Tokenizer::from_file("tokenizer.json").unwrap();
-    /// let text = tokenizer.decode(42).unwrap();
-    /// println!("Token 42: {}", text);
-    /// ```
+    /// Decode a single token ID into text.
     pub fn decode(&self, token_id: u32) -> Result<String> {
         self.decode_batch(&[token_id])
     }
 
-    /// Decode a sequence of token IDs into text
-    ///
-    /// # Arguments
-    /// * `token_ids` - Slice of token IDs to decode
-    ///
-    /// # Returns
-    /// The decoded text string
-    ///
-    /// # Example
-    /// ```no_run
-    /// # use janus_engine::model::Tokenizer;
-    /// # let tokenizer = Tokenizer::from_file("tokenizer.json").unwrap();
-    /// let tokens = vec![1, 15043, 29892, 3186, 29991]; // "Hello, world!"
-    /// let text = tokenizer.decode_batch(&tokens).unwrap();
-    /// println!("Text: {}", text);
-    /// ```
+    /// Decode a sequence of token IDs into text.
     pub fn decode_batch(&self, token_ids: &[u32]) -> Result<String> {
-        self.tokenizer
-            .decode(token_ids, true)
-            .map_err(|e| TokenizerError::DecodeFailed(e.to_string()))
+        let mut bytes = Vec::new();
+        for &id in token_ids {
+            if id == Self::LLAMA3_BOS_TOKEN_ID || id == Self::LLAMA3_EOT_TOKEN_ID {
+                continue;
+            }
+
+            let tok = self.id_to_token.get(id as usize).ok_or_else(|| {
+                TokenizerError::DecodeFailed(format!("token id out of range: {}", id))
+            })?;
+            bytes.extend_from_slice(tok);
+        }
+
+        String::from_utf8(bytes).map_err(|e| TokenizerError::DecodeFailed(e.to_string()))
     }
 
-    /// Get the vocabulary size
-    ///
-    /// # Returns
-    /// Number of tokens in the vocabulary
-    pub const fn vocab_size(&self) -> usize {
-        self.vocab_size
+    /// Get vocabulary size.
+    pub fn vocab_size(&self) -> usize {
+        self.id_to_token.len()
     }
 
-    /// Get the token ID for the beginning-of-sequence token
-    ///
-    /// # Returns
-    /// BOS token ID, if it exists
-    pub fn bos_token_id(&self) -> Option<u32> {
-        self.tokenizer
-            .token_to_id("<s>")
-            .or_else(|| self.tokenizer.token_to_id("[BOS]"))
-            .or_else(|| self.tokenizer.token_to_id("<bos>"))
+    /// Llama 3 BOS token.
+    pub const fn bos_token_id(&self) -> Option<u32> {
+        Some(Self::LLAMA3_BOS_TOKEN_ID)
     }
 
-    /// Get the token ID for the end-of-sequence token
-    ///
-    /// # Returns
-    /// EOS token ID, if it exists
-    pub fn eos_token_id(&self) -> Option<u32> {
-        self.tokenizer
-            .token_to_id("</s>")
-            .or_else(|| self.tokenizer.token_to_id("[EOS]"))
-            .or_else(|| self.tokenizer.token_to_id("<eos>"))
+    /// Llama 3 EOT token.
+    pub const fn eos_token_id(&self) -> Option<u32> {
+        Some(Self::LLAMA3_EOT_TOKEN_ID)
     }
 
-    /// Get the token ID for the padding token
-    ///
-    /// # Returns
-    /// PAD token ID, if it exists
-    pub fn pad_token_id(&self) -> Option<u32> {
-        self.tokenizer
-            .token_to_id("<pad>")
-            .or_else(|| self.tokenizer.token_to_id("[PAD]"))
+    /// No pad token in current native GGUF tokenizer path.
+    pub const fn pad_token_id(&self) -> Option<u32> {
+        None
     }
 
-    /// Convert a token ID to its string representation
-    ///
-    /// This is useful for debugging or inspecting individual tokens.
-    ///
-    /// # Arguments
-    /// * `token_id` - The token ID to convert
-    ///
-    /// # Returns
-    /// The token string, if it exists in the vocabulary
+    /// Convert token ID to string (lossy UTF-8 for debugging).
     pub fn id_to_token(&self, token_id: u32) -> Option<String> {
-        self.tokenizer.id_to_token(token_id)
+        self.id_to_token
+            .get(token_id as usize)
+            .and_then(|b| String::from_utf8(b.clone()).ok())
+    }
+
+    fn metadata_array<'a>(metadata: &'a GgufMetadata, key: &str) -> Result<&'a [MetadataValue]> {
+        match metadata.metadata.get(key) {
+            Some(MetadataValue::Array(values)) => Ok(values),
+            Some(_) => Err(TokenizerError::InvalidGgufMetadata(format!(
+                "metadata key '{}' exists but is not an array",
+                key
+            ))),
+            None => Err(TokenizerError::InvalidGgufMetadata(format!(
+                "missing required metadata key '{}'",
+                key
+            ))),
+        }
+    }
+
+    fn metadata_token_bytes_array(metadata: &GgufMetadata, key: &str) -> Result<Vec<Vec<u8>>> {
+        Self::metadata_array(metadata, key)?
+            .iter()
+            .map(|value| match value {
+                MetadataValue::String(s) => Ok(Self::unescape_gguf_token_literal(s)),
+                _ => Err(TokenizerError::InvalidGgufMetadata(format!(
+                    "metadata key '{}' contains a non-string token entry",
+                    key
+                ))),
+            })
+            .collect()
+    }
+
+    fn unescape_gguf_token_literal(input: &str) -> Vec<u8> {
+        let bytes = input.as_bytes();
+        let mut out = Vec::with_capacity(bytes.len());
+        let mut i = 0usize;
+
+        while i < bytes.len() {
+            if bytes[i] != b'\\' || i + 1 >= bytes.len() {
+                out.push(bytes[i]);
+                i += 1;
+                continue;
+            }
+
+            let esc = bytes[i + 1];
+            match esc {
+                b'n' => {
+                    out.push(b'\n');
+                    i += 2;
+                }
+                b'r' => {
+                    out.push(b'\r');
+                    i += 2;
+                }
+                b't' => {
+                    out.push(b'\t');
+                    i += 2;
+                }
+                b'\\' => {
+                    out.push(b'\\');
+                    i += 2;
+                }
+                b'\'' => {
+                    out.push(b'\'');
+                    i += 2;
+                }
+                b'"' => {
+                    out.push(b'"');
+                    i += 2;
+                }
+                b'x' => {
+                    if i + 3 < bytes.len() {
+                        let h1 = bytes[i + 2] as char;
+                        let h2 = bytes[i + 3] as char;
+                        if let (Some(a), Some(b)) = (h1.to_digit(16), h2.to_digit(16)) {
+                            out.push(((a << 4) | b) as u8);
+                            i += 4;
+                            continue;
+                        }
+                    }
+                    out.push(bytes[i]);
+                    i += 1;
+                }
+                _ => {
+                    out.push(bytes[i]);
+                    i += 1;
+                }
+            }
+        }
+
+        out
+    }
+
+    fn metadata_f32_array(metadata: &GgufMetadata, key: &str) -> Result<Vec<f32>> {
+        Self::metadata_array(metadata, key)?
+            .iter()
+            .map(|value| match value {
+                MetadataValue::Float32(v) => Ok(*v),
+                MetadataValue::Float64(v) => Ok(*v as f32),
+                MetadataValue::Int8(v) => Ok(f32::from(*v)),
+                MetadataValue::Int16(v) => Ok(f32::from(*v)),
+                MetadataValue::Int32(v) => Ok(*v as f32),
+                MetadataValue::Int64(v) => Ok(*v as f32),
+                MetadataValue::UInt8(v) => Ok(f32::from(*v)),
+                MetadataValue::UInt16(v) => Ok(f32::from(*v)),
+                MetadataValue::UInt32(v) => Ok(*v as f32),
+                MetadataValue::UInt64(v) => Ok(*v as f32),
+                _ => Err(TokenizerError::InvalidGgufMetadata(format!(
+                    "metadata key '{}' contains a non-numeric score entry",
+                    key
+                ))),
+            })
+            .collect()
     }
 }
+
+/// Backward-compatible alias used throughout the engine.
+pub type Tokenizer = GgufTokenizer;
 
 #[cfg(test)]
 mod tests {
@@ -370,5 +344,20 @@ mod tests {
     fn test_tokenizer_error_display() {
         let err = TokenizerError::LoadFailed("test error".to_string());
         assert_eq!(err.to_string(), "Failed to load tokenizer: test error");
+    }
+
+    #[test]
+    fn test_llama3_regex_compiles() {
+        let chunks: Vec<String> = LLAMA3_SPLIT_RE
+            .find_iter("Hello, world! 123")
+            .map(|m| m.expect("regex match").as_str().to_string())
+            .collect();
+        assert!(!chunks.is_empty());
+    }
+
+    #[test]
+    fn test_unescape_newline_literal() {
+        let bytes = GgufTokenizer::unescape_gguf_token_literal("\\n");
+        assert_eq!(bytes, vec![b'\n']);
     }
 }

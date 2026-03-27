@@ -42,7 +42,7 @@ half = "2.7.1"
 rand = "0.10"
 
 # Tokenization
-tokenizers = "0.20"
+fancy-regex = "0.17"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full", "test-util"] }

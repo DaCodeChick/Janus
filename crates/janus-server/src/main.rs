@@ -3,8 +3,8 @@ use clap::{Parser, ValueEnum};
 use janus_engine::model::block::get_tensor;
 use janus_engine::model::config::model_config_from_gguf_metadata;
 use janus_engine::{
-    ChatFormatter, ChatTemplateFormat, ComputeEngine, GgufLoader, HuggingFaceConfig, JanusApp,
-    Model, ModelConfig, SafetensorsLoader, Sampler, SamplerConfig, Tokenizer, TransformerBlock,
+    ChatFormatter, ChatTemplateFormat, ComputeEngine, GgufLoader, JanusApp, Model, Sampler,
+    SamplerConfig, Tokenizer, TransformerBlock,
     TransformerBlockConfig,
 };
 #[cfg(feature = "imggen")]
@@ -74,6 +74,12 @@ struct Args {
     /// Override auto-detected chat template
     #[arg(long)]
     template: Option<TemplateArg>,
+
+    /// Runtime context window used for KV cache allocation and generation.
+    ///
+    /// This is clamped against model metadata/config max_seq_len.
+    #[arg(long, default_value_t = 4096)]
+    context_size: u32,
 }
 
 fn build_transformer_block(
@@ -199,7 +205,6 @@ async fn main() -> Result<()> {
 
     let (model_path, model_dir) = resolve_model_paths(&args.model)?;
     let config_path = model_dir.join("config.json");
-    let tokenizer_path = model_dir.join("tokenizer.json");
     let extension = model_path
         .extension()
         .and_then(|s| s.to_str())
@@ -207,46 +212,52 @@ async fn main() -> Result<()> {
         .unwrap_or_default();
 
     println!("Loading model: {:?}", model_path);
-    println!("Loading tokenizer: {:?}", tokenizer_path);
     if extension == "safetensors" {
         println!("Loading config: {:?}", config_path);
+        println!("Loading tokenizer: {:?}", model_dir.join("tokenizer.json"));
     } else {
+        println!("Tokenizer source: embedded GGUF metadata");
         println!("Model config source: embedded GGUF metadata");
     }
+    println!("Requested runtime context_size: {}", args.context_size);
 
     let engine = ComputeEngine::new().await.context("failed to initialize GPU")?;
     app.set_gpu_context(&engine);
-    let tokenizer =
-        Tokenizer::from_file(&tokenizer_path).context("failed to load tokenizer.json")?;
 
-    let (tensors, model_config) = if extension == "gguf" {
+    let (tokenizer, tensors, mut model_config) = if extension == "gguf" {
         let loader = GgufLoader::from_file(&model_path).context("failed to parse GGUF file")?;
+        let tokenizer = Tokenizer::from_gguf_metadata(loader.gguf_metadata())
+            .context("failed to build tokenizer from GGUF metadata")?;
         let model_config = model_config_from_gguf_metadata(
             loader.gguf_metadata(),
             tokenizer.vocab_size() as u32,
         )
         .map_err(|e| anyhow::anyhow!("failed to build config from GGUF metadata: {}", e))?;
-        (
-            engine
-                .allocate_tensors(&loader)
-                .context("failed to allocate GGUF tensors")?,
-            model_config,
-        )
+        let tensors = engine
+            .allocate_tensors(&loader)
+            .context("failed to allocate GGUF tensors")?;
+        (tokenizer, tensors, model_config)
     } else if extension == "safetensors" {
-        let hf_config =
-            HuggingFaceConfig::from_file(&config_path).context("failed to load config.json")?;
-        let model_config: ModelConfig = (&hf_config).into();
-        let loader =
-            SafetensorsLoader::from_file(&model_path).context("failed to parse Safetensors")?;
-        (
-            engine
-                .allocate_tensors(&loader)
-                .context("failed to allocate Safetensors tensors")?,
-            model_config,
-        )
+        bail!(
+            "safetensors is currently unsupported without tokenizer.json; native tokenizer path requires GGUF metadata"
+        );
     } else {
         bail!("unsupported model extension '{}': expected .gguf or .safetensors", extension);
     };
+
+    let original_max_seq_len = model_config.max_seq_len;
+    model_config.max_seq_len = model_config.max_seq_len.min(args.context_size);
+    if model_config.max_seq_len != original_max_seq_len {
+        tracing::warn!(
+            "Clamped model max_seq_len from {} to {} using --context-size",
+            original_max_seq_len,
+            model_config.max_seq_len
+        );
+    }
+    println!(
+        "Using runtime max_seq_len: {} (model metadata/config: {})",
+        model_config.max_seq_len, original_max_seq_len
+    );
 
     let sampler = Sampler::new(
         SamplerConfig {
@@ -304,11 +315,8 @@ async fn main() -> Result<()> {
     let chat_formatter = if let Some(template) = args.template {
         ChatFormatter::new(template.into())
     } else {
-        let detection_name = model_dir
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or(&model_name);
-        ChatFormatter::from_model_name(detection_name)
+        // Llama 3 is the native target template for current GGUF path.
+        ChatFormatter::new(ChatTemplateFormat::Llama3)
     };
 
     let shared_model = Arc::new(Mutex::new(model));

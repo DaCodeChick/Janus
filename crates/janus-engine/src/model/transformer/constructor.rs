@@ -79,23 +79,19 @@ impl Model {
         // Note: All tensors are stored as packed FP16 (2 bytes per element) on GPU
         // to optimize VRAM usage. The engine converts F32/BF16 -> packed FP16 during allocation.
 
-        // Token embedding table: [vocab_size × hidden_dim] × 2 bytes (packed FP16)
+        // Token embedding table: runtime embedding shader expects packed FP16 weights
+        // (either directly loaded as F16/F32->packed FP16 or dequantized-to-packed during allocation).
         let expected_emb_size_fp16 = (config.vocab_size * config.hidden_dim * 2) as u64;
-        let expected_emb_size_fp32 = (config.vocab_size * config.hidden_dim * 4) as u64;
         let actual_emb_size = token_embedding_table.size();
 
-        if actual_emb_size != expected_emb_size_fp16 && actual_emb_size != expected_emb_size_fp32 {
+        if actual_emb_size != expected_emb_size_fp16 {
             return Err(crate::compute::ComputeError::InvalidDimensions(format!(
-                "Token embedding table size mismatch\nExpected: {} bytes (packed FP16: {} vocab × {} hidden × 2 bytes)\n       or {} bytes (F32: {} vocab × {} hidden × 4 bytes)\nActual: {} bytes\n\nSuggestions:\n  - Verify the config.json matches this model\n  - Check if vocab_size or hidden_size are incorrect\n  - Actual vocab_size might be {} (if FP16) or {} (if F32)",
+                "Token embedding table size mismatch\nExpected: {} bytes (packed FP16: {} vocab × {} hidden × 2 bytes)\nActual: {} bytes\n\nSuggestions:\n  - Verify the config.json matches this model\n  - Check if vocab_size or hidden_size are incorrect\n  - If the source model is quantized (Q4_K/Q5_K/Q8_0), ensure embedding dequantization ran during allocation\n  - Approximate vocab_size from actual bytes: {}",
                 expected_emb_size_fp16,
-                config.vocab_size,
-                config.hidden_dim,
-                expected_emb_size_fp32,
                 config.vocab_size,
                 config.hidden_dim,
                 actual_emb_size,
                 actual_emb_size / (config.hidden_dim * 2) as u64,
-                actual_emb_size / (config.hidden_dim * 4) as u64,
             )));
         }
 

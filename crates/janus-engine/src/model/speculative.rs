@@ -249,7 +249,11 @@ impl SpeculativeDecoder {
             }
 
             // Check for EOS
-            let eos_token_id = self.target_model.tokenizer().eos_token_id().unwrap_or(2);
+            let eos_token_id = self
+                .target_model
+                .tokenizer()
+                .eos_token_id()
+                .unwrap_or(128_009);
             if last_target_token == eos_token_id || last_target_token == 2 {
                 tracing::info!("Generated EOS token, stopping");
                 break;
@@ -335,7 +339,11 @@ impl SpeculativeDecoder {
             let next_token = self.draft_model.sample_next_token(&draft_tokens).await?;
 
             // Check for EOS
-            let eos_token_id = self.draft_model.tokenizer().eos_token_id().unwrap_or(2);
+            let eos_token_id = self
+                .draft_model
+                .tokenizer()
+                .eos_token_id()
+                .unwrap_or(128_009);
             if next_token == eos_token_id || next_token == 2 {
                 break;
             }

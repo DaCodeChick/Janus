@@ -46,7 +46,7 @@ pub enum ChatTemplateFormat {
     ChatML,
 
     /// Llama 3 format
-    /// Format: `<|start_header_id|>role<|end_header_id|>\n\ncontent<|eot_id|>`
+    /// Format: `<|begin_of_text|><|start_header_id|>role<|end_header_id|>\n\ncontent<|eot_id|>`
     Llama3,
 
     /// Llama 2 format
@@ -74,7 +74,11 @@ impl ChatTemplateFormat {
     pub fn detect_from_model_name(model_name: &str) -> Self {
         let model_lower = model_name.to_lowercase();
 
-        if model_lower.contains("llama-3") || model_lower.contains("llama3") {
+        if model_lower.contains("llama-3")
+            || model_lower.contains("llama3")
+            || model_lower.contains("llama 3")
+            || model_lower.contains("meta-llama/llama-3")
+        {
             Self::Llama3
         } else if model_lower.contains("llama-2") || model_lower.contains("llama2") {
             Self::Llama2
@@ -181,7 +185,7 @@ impl ChatFormatter {
     }
 
     fn format_llama3(&self, messages: &[ChatMessage]) -> String {
-        let mut prompt = String::new();
+        let mut prompt = String::from("<|begin_of_text|>");
 
         for msg in messages {
             prompt.push_str(&format!(
@@ -328,6 +332,28 @@ mod tests {
         assert!(prompt.contains("<|im_start|>system"));
         assert!(prompt.contains("<|im_start|>user"));
         assert!(prompt.contains("<|im_start|>assistant"));
+    }
+
+    #[test]
+    fn test_llama3_format_includes_bos_and_headers() {
+        let formatter = ChatFormatter::new(ChatTemplateFormat::Llama3);
+        let messages = vec![
+            ChatMessage {
+                role: ChatRole::System,
+                content: "You are a helpful assistant.".to_string(),
+            },
+            ChatMessage {
+                role: ChatRole::User,
+                content: "Hello!".to_string(),
+            },
+        ];
+
+        let prompt = formatter.format_chat(&messages);
+        assert!(
+            prompt.starts_with("<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\n")
+        );
+        assert!(prompt.contains("<|start_header_id|>user<|end_header_id|>\n\nHello!<|eot_id|>"));
+        assert!(prompt.ends_with("<|start_header_id|>assistant<|end_header_id|>\n\n"));
     }
 
     #[test]

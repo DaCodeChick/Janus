@@ -15,16 +15,16 @@
 //!
 //! Directory mode expects model_dir to contain:
 //!   - model.gguf or model.safetensors (model weights)
-//!   - config.json (HuggingFace config)
-//!   - tokenizer.json (HuggingFace tokenizer)
+//!   - config.json (for Safetensors)
+//!   - tokenizer.json (for Safetensors)
 
 use std::collections::HashMap;
 use std::env;
 use std::io::{self, Write};
 use std::path::PathBuf;
 use janus_engine::{
-    ComputeEngine, GgufFile, SafetensorsFile, HuggingFaceConfig,
-    Model, ModelConfig, Tokenizer, Sampler, SamplerConfig, TransformerBlock, TransformerBlockConfig
+    ComputeEngine, GgufFile, SafetensorsFile, Model, ModelConfig, Tokenizer, Sampler,
+    SamplerConfig, TransformerBlock, TransformerBlockConfig,
 };
 use janus_engine::model::block::get_tensor;
 
@@ -162,25 +162,39 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("Loading model from {:?}", model_path);
     println!("Config: {:?}", config_path);
-    println!("Tokenizer: {:?}", tokenizer_path);
+    if model_path
+        .extension()
+        .and_then(|s| s.to_str())
+        .map(|s| s.eq_ignore_ascii_case("gguf"))
+        .unwrap_or(false)
+    {
+        println!("Tokenizer: embedded GGUF metadata");
+    } else {
+        println!("Tokenizer: {:?}", tokenizer_path);
+    }
 
     // Initialize compute engine
     let engine = ComputeEngine::new().await?;
     println!("Initialized compute engine");
 
-    // Load HuggingFace config
-    let hf_config = HuggingFaceConfig::from_file(&config_path)?;
-    println!("Loaded config");
+    let extension = model_path.extension().and_then(|s| s.to_str()).unwrap_or("");
 
-    // Convert to ModelConfig
-    let model_config: ModelConfig = (&hf_config).into();
-
-    // Load tokenizer
-    let tokenizer = Tokenizer::from_file(&tokenizer_path)?;
+    // Load configuration + tokenizer
+    let (tokenizer, model_config) = if extension.eq_ignore_ascii_case("gguf") {
+        let loader = GgufFile::from_file(&model_path)?;
+        let tokenizer = Tokenizer::from_gguf_metadata(loader.gguf_metadata())?;
+        let model_config = janus_engine::model::config::model_config_from_gguf_metadata(
+            loader.gguf_metadata(),
+            tokenizer.vocab_size() as u32,
+        )?;
+        (tokenizer, model_config)
+    } else {
+        return Err("safetensors mode is unsupported without tokenizer.json/native metadata".into());
+    };
     println!("Loaded tokenizer with vocab size: {}", tokenizer.vocab_size());
 
     // Load model weights based on file extension
-    let tensors = if model_path.extension().and_then(|s| s.to_str()) == Some("gguf") {
+    let tensors = if extension.eq_ignore_ascii_case("gguf") {
         let loader = GgufFile::from_file(&model_path)?;
         engine.allocate_tensors(&loader)?
     } else {
