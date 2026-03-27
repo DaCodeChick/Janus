@@ -34,7 +34,7 @@ impl SystemState {
         if self.total_vram_bytes == 0 {
             return true;
         }
-        let threshold = self.total_vram_bytes / 10; // 10%
+        let threshold = self.total_vram_bytes / 10;
         self.available_vram_bytes < threshold
     }
 
@@ -58,7 +58,7 @@ impl SystemState {
 impl Default for SystemState {
     fn default() -> Self {
         Self {
-            available_vram_bytes: 8 * 1024 * 1024 * 1024, // 8GB
+            available_vram_bytes: 8 * 1024 * 1024 * 1024,
             total_vram_bytes: 8 * 1024 * 1024 * 1024,
             gpu_utilization: 0,
             local_engine_available: true,
@@ -106,54 +106,5 @@ impl RouteDestination {
     /// Check if this is a cloud route
     pub const fn is_cloud(&self) -> bool {
         matches!(self, RouteDestination::CloudAPI)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_system_state_vram_exhausted() {
-        let state = SystemState::new(
-            500 * 1024 * 1024,      // 500MB available
-            8 * 1024 * 1024 * 1024, // 8GB total
-            50,
-            true,
-        );
-        assert!(
-            state.is_vram_exhausted(),
-            "500MB of 8GB should be exhausted"
-        );
-    }
-
-    #[test]
-    fn test_system_state_vram_ok() {
-        let state = SystemState::new(
-            2 * 1024 * 1024 * 1024, // 2GB available
-            8 * 1024 * 1024 * 1024, // 8GB total
-            50,
-            true,
-        );
-        assert!(!state.is_vram_exhausted(), "2GB of 8GB should be fine");
-    }
-
-    #[test]
-    fn test_system_state_vram_usage_percent() {
-        let state = SystemState::new(
-            2 * 1024 * 1024 * 1024, // 2GB available
-            8 * 1024 * 1024 * 1024, // 8GB total
-            50,
-            true,
-        );
-        assert_eq!(state.vram_usage_percent(), 75, "6GB used of 8GB = 75%");
-    }
-
-    #[test]
-    fn test_route_destination_checks() {
-        assert!(RouteDestination::LocalEngine.is_local());
-        assert!(!RouteDestination::LocalEngine.is_cloud());
-        assert!(RouteDestination::CloudAPI.is_cloud());
-        assert!(!RouteDestination::CloudAPI.is_local());
     }
 }

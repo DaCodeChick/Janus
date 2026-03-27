@@ -1,5 +1,5 @@
 [package]
-name = "janus-router"
+name = "janus-mod-router"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -9,3 +9,4 @@ authors.workspace = true
 workspace = true
 
 [dependencies]
+janus-engine = { path = "../janus-engine" }

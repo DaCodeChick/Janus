@@ -1,6 +1,6 @@
 //! Plugin loading infrastructure
 //!
-//! Handles dynamic loading of plugins using abi_stable
+//! Placeholder for future dynamic plugin loading support.
 
 use std::path::Path;
 use thiserror::Error;
@@ -31,7 +31,6 @@ impl PluginLoader {
 
     /// Load a plugin from a dynamic library
     pub fn load_plugin<P: AsRef<Path>>(&self, _path: P) -> Result<()> {
-        // TODO: Implement using abi_stable::library
         todo!("Plugin loading not yet implemented")
     }
 }

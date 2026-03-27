@@ -1,11 +1,18 @@
 [workspace]
 members = [
-    "crates/janus-api",
     "crates/janus-engine",
-    "crates/janus-router",
     "crates/janus-server",
-    "crates/plugins/janus-instruct-plugin",
-    "crates/plugins/janus-roleplay-plugin",
+    "crates/janus-mod-imggen",
+    "crates/janus-mod-instruct",
+    "crates/janus-mod-knowledge",
+    "crates/janus-mod-lora",
+    "crates/janus-mod-router",
+    "crates/janus-mod-rp",
+    "crates/janus-mod-tts",
+    "crates/janus-mod-vecmem",
+    "crates/janus-mod-vision",
+    "crates/janus-mod-vismem",
+    "crates/janus-mod-voice",
 ]
 
 resolver = "2"
@@ -25,9 +32,6 @@ license = "LGPL-3.0-or-later"
 repository = "https://github.com/yourusername/janus-engine"
 
 [workspace.dependencies]
-# FFI Safety - ABI-stable plugin interface
-abi_stable = "0.11.3"
-
 # Compute backend - WGPU for cross-platform GPU compute
 wgpu = "29"
 bytemuck = { version = "1.25", features = ["derive"] }

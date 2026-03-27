@@ -19,12 +19,9 @@ serde_json.workspace = true
 
 # GPU compute
 wgpu.workspace = true
+axum.workspace = true
 bytemuck.workspace = true
 pollster.workspace = true
-
-# Plugin loading
-abi_stable.workspace = true
-janus-api = { path = "../janus-api" }
 
 # Async runtime
 tokio.workspace = true

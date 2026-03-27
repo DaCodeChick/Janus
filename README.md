@@ -1,321 +1,125 @@
-# Janus Engine
+# Janus
 
 [![License: LGPL-3.0-or-later](https://img.shields.io/badge/License-LGPL%203.0+-blue.svg)](LICENSE)
 
-**Janus Engine** is a high-performance, GPU-accelerated LLM inference engine built in Rust with WebGPU. It achieves exceptional performance through advanced optimizations including static computation graphs, pipeline caching, and zero-copy memory management.
+Janus is a Rust workspace for local, GPU-accelerated LLM inference with a modular server architecture.
+It includes a WebGPU-based engine, an OpenAI-compatible chat API server, deterministic routing, and a set
+of composable `janus-mod-*` modules.
 
-## 🚀 Key Features
+## Highlights
 
-- **GPU-Accelerated Inference**: Cross-platform GPU compute via WebGPU (wgpu)
-- **Extreme Performance Optimization**:
-  - Static computation graph with **1 GPU submission per token** (97-98% reduction)
-  - Zero dynamic buffer allocations during inference
-  - Pre-compiled shader pipeline cache (10-20% additional speedup)
-- **Multiple Model Format Support**:
-  - GGUF models (quantized and FP16)
-  - Safetensors models
-- **Flexible Architecture**:
-  - Plugin system with ABI-stable FFI
-  - Intelligent routing between local and cloud inference
-  - HTTP API server with streaming support
-- **Production-Ready**:
-  - Strict error handling (no unwrap/expect in production code)
-  - Comprehensive testing
-  - Type-safe quantization support (Q4_K)
+- GPU inference via `wgpu` (Vulkan/Metal/DX12 backends)
+- Model loading from GGUF and Safetensors
+- OpenAI-compatible chat endpoint: `POST /v1/chat/completions`
+- Streaming responses via Server-Sent Events (SSE)
+- Built-in web chat UI (`GET /chat`) and health check (`GET /health`)
+- Modular architecture with in-process module plugins via `JanusPlugin` and pluggable `janus-mod-*` crates
 
-## 📊 Performance
+## Workspace Layout
 
-Recent optimizations have achieved dramatic performance improvements:
+Current workspace members in `Cargo.toml`:
 
-| Metric | Before | After | Improvement |
-|--------|--------|-------|-------------|
-| GPU Submissions/Token | 30-50+ | 1 | 97-98% reduction |
-| Dynamic Allocations | Hundreds | 0 | 100% reduction |
-| Shader Compilations | Per operation | At model load | ~20% speedup |
+- `crates/janus-engine` - core inference engine, model formats, generation
+- `crates/janus-server` - HTTP server and OpenAI-compatible API
+- `crates/janus-mod-router` - routing module and deterministic routing primitives
+- `crates/janus-mod-*` - modular server plugins (instruct, routing, vision, tts, etc.)
 
-**Architecture Highlights:**
-- Pre-allocated scratch buffers (15 buffers in Model struct)
-- Ping-pong buffer pattern for transformer layers
-- Single command encoder for entire forward pass
-- High-precision benchmarking (millisecond accuracy)
+There are also legacy example plugin crates under `crates/plugins/` that are not part of the workspace.
 
-## 🏗️ Architecture
+## Prerequisites
 
-```
-janus/
-├── janus-api/           # ABI-stable plugin API
-├── janus-engine/        # Core GPU inference engine
-│   ├── compute/         # GPU compute operations
-│   │   ├── ops/         # Tensor operations (GEMM, RoPE, Attention, etc.)
-│   │   ├── cache.rs     # KV cache for autoregressive generation
-│   │   ├── engine.rs    # ComputeEngine (GPU device/queue)
-│   │   └── pipeline_cache.rs  # Pre-compiled shader cache
-│   ├── model/           # Transformer model implementation
-│   │   ├── block.rs     # TransformerBlock (attention + FFN)
-│   │   ├── model.rs     # Full Model with static computation graph
-│   │   ├── output.rs    # LM Head for logits generation
-│   │   └── sampler.rs   # Token sampling strategies
-│   └── loaders/         # Model loading (GGUF, Safetensors)
-├── janus-router/        # Intelligent routing logic
-├── janus-server/        # HTTP API server
-└── plugins/             # Plugin implementations
-    ├── janus-instruct-plugin/
-    └── janus-roleplay-plugin/
-```
+- Rust toolchain (workspace uses Rust 2024 edition)
+- A supported GPU/runtime for `wgpu` (Vulkan, Metal, or DirectX 12)
+- Model assets:
+  - `model.gguf` or `model.safetensors`
+  - `tokenizer.json`
+  - `config.json` (required for Safetensors)
 
-## 🛠️ Installation
-
-### Prerequisites
-
-- Rust 1.75+ (2024 edition)
-- GPU with Vulkan/Metal/DirectX 12 support
-- At least 4GB VRAM (8GB+ recommended for larger models)
-
-### Build from Source
+## Build and Test
 
 ```bash
-# Clone the repository
-git clone https://github.com/yourusername/janus-engine.git
-cd janus-engine
-
-# Build the project
-cargo build --release
+# Build all crates
+cargo build --workspace --release
 
 # Run tests
 cargo test --workspace
+
+# Optional lint/format checks
+cargo fmt --all -- --check
+cargo clippy --workspace -- -D warnings
 ```
 
-## 📖 Usage
+## Quick Start
 
-### Basic Inference Example
+### 1) Run local inference example
 
-```rust
-use janus_engine::{ComputeEngine, Model, ModelConfig, Tokenizer, Sampler};
-
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Initialize GPU compute engine
-    let engine = ComputeEngine::new().await?;
-    
-    // Load model from GGUF file
-    let model = Model::from_gguf("path/to/model.gguf", &engine).await?;
-    
-    // Load tokenizer
-    let tokenizer = Tokenizer::from_file("tokenizer.json")?;
-    
-    // Generate text
-    let prompt = "Hello, how are you?";
-    let tokens = tokenizer.encode(prompt)?;
-    
-    let sampler = Sampler::new();
-    let output = model.generate(&tokens, 50, &sampler).await?;
-    
-    println!("{}", tokenizer.decode(&output)?);
-    Ok(())
-}
-```
-
-### Running the Inference Example
-
-**Directory mode** (auto-discovers model files):
-```bash
-cargo run --release --example inference path/to/model_dir "Your prompt here"
-```
-
-**File mode** (explicit paths):
-```bash
-cargo run --release --example inference \
-    path/to/model.gguf \
-    path/to/config.json \
-    path/to/tokenizer.json \
-    "Your prompt here"
-```
-
-### Supported Model Architectures
-
-- **LLaMA/LLaMA 2** (Meta)
-- **Mistral** (Mistral AI)
-- **TinyLlama** (tiny but powerful)
-- Any transformer model following the LLaMA architecture
-
-## 🔌 Plugin System
-
-Janus supports dynamic plugins via an ABI-stable FFI interface:
-
-```rust
-use janus_api::{Plugin, PluginCapabilities, ProcessingContext};
-
-#[export_name = "janus_plugin_create"]
-pub extern "C" fn create_plugin() -> Box<dyn Plugin> {
-    Box::new(MyPlugin::new())
-}
-```
-
-See [`crates/plugins/`](crates/plugins/) for example implementations.
-
-## 🎯 Intelligent Routing
-
-The router can automatically decide between local GPU inference and cloud APIs:
-
-```rust
-use janus_router::{DeterministicRouter, RoutingRequest, SystemState};
-
-let router = DeterministicRouter::new();
-let request = RoutingRequest::new(
-    prompt.to_string(),
-    token_count,
-    SystemState::default(),
-);
-
-let destination = router.route(&request);
-```
-
-Routing heuristics include:
-- Local engine availability
-- VRAM exhaustion detection
-- Token threshold enforcement
-- Complexity keyword matching
-
-See [janus-router/README.md](crates/janus-router/README.md) for details.
-
-## 🌐 HTTP API Server
-
-Run a local inference API server:
+Directory mode (recommended):
 
 ```bash
-cargo run --release -p janus-server
+cargo run -p janus-engine --example inference --release -- path/to/model_dir "Hello from Janus"
 ```
 
-The server provides:
-- OpenAI-compatible `/v1/completions` endpoint
-- Streaming responses via Server-Sent Events (SSE)
-- Plugin-based text processing
-- Model management
+File mode examples are documented in `crates/janus-engine/examples/inference.rs`.
 
-## 🧪 Testing
-
-Run the comprehensive test suite:
+### 2) Run the chat server
 
 ```bash
-# Run all tests
+cargo run -p janus-server --release -- path/to/model_dir --host 0.0.0.0 --port 8080
+```
+
+You can also pass a model file directly (`.gguf` or `.safetensors`) instead of a directory.
+
+### 3) Call the OpenAI-compatible API
+
+```bash
+curl http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "model",
+    "messages": [
+      {"role": "system", "content": "You are a helpful assistant."},
+      {"role": "user", "content": "What is Janus?"}
+    ],
+    "max_tokens": 128,
+    "temperature": 0.7
+  }'
+```
+
+For streaming, set `"stream": true`.
+
+## API Endpoints
+
+- `GET /` - HTML docs/landing page
+- `GET /chat` - interactive browser chat UI
+- `GET /health` - health + loaded model name
+- `POST /v1/chat/completions` - OpenAI-compatible chat completions (streaming and non-streaming)
+
+## Notes on Routing and Plugins
+
+- `janus-mod-router` provides deterministic local/cloud routing heuristics.
+- Plugins are module-based and compose through `janus_engine::JanusPlugin` at app startup.
+- `janus-server` currently wires in multiple `janus-mod-*` plugins at startup (instruct, router,
+  knowledge, lora, rp, tts, vecmem, vision, vismem, voice, imggen).
+
+## Documentation
+
+- `doc/ARCHITECTURE.md`
+- `doc/SHADER_GUIDE.md`
+- `doc/PERFORMANCE_TUNING.md`
+- `doc/SUPPORTED_MODELS.md`
+- `doc/FP16_IMPLEMENTATION.md`
+- `doc/SERVER_README.md`
+
+## Contributing
+
+Contributions are welcome. Before opening a PR, please run:
+
+```bash
 cargo test --workspace
-
-# Run specific crate tests
-cargo test -p janus-engine
-cargo test -p janus-router
-
-# Run with output
-cargo test -- --nocapture
+cargo fmt --all
+cargo clippy --workspace -- -D warnings
 ```
 
-## 📈 Performance Benchmarking
+## License
 
-The engine includes built-in high-precision benchmarking:
-
-```rust
-// Benchmark output during generation:
-// Tokens generated: 50
-// Elapsed time: 1234ms
-// Speed: 40.52 tok/s
-// GPU submissions: 50 (1.00 per token)
-```
-
-## 🔧 Configuration
-
-### Workspace Configuration
-
-Key settings in `Cargo.toml`:
-
-```toml
-[workspace.lints.clippy]
-unwrap_used = "deny"      # Enforce proper error handling
-expect_used = "deny"
-panic = "warn"
-
-[profile.release]
-opt-level = 3             # Maximum optimization
-lto = "thin"              # Link-time optimization
-codegen-units = 1         # Single codegen unit for better optimization
-```
-
-### Model Configuration
-
-Models can be configured via `config.json` (HuggingFace format):
-
-```json
-{
-  "architectures": ["LlamaForCausalLM"],
-  "hidden_size": 4096,
-  "num_attention_heads": 32,
-  "num_hidden_layers": 32,
-  "num_key_value_heads": 4,
-  "intermediate_size": 11008,
-  "rms_norm_eps": 1e-05
-}
-```
-
-## 🤝 Contributing
-
-Contributions are welcome! Please ensure:
-
-1. Code follows the strict error handling policy (no `unwrap`/`expect`)
-2. All tests pass: `cargo test --workspace`
-3. Code is formatted: `cargo fmt`
-4. Clippy is happy: `cargo clippy --workspace -- -D warnings`
-
-## 📝 License
-
-This project is licensed under the **LGPL-3.0-or-later** license. See [LICENSE](LICENSE) for details.
-
-## 🙏 Acknowledgments
-
-- Built with [wgpu](https://github.com/gfx-rs/wgpu) for cross-platform GPU compute
-- Inspired by [llama.cpp](https://github.com/ggerganov/llama.cpp) and modern LLM inference engines
-- Uses [HuggingFace](https://huggingface.co/) model formats and tokenizers
-
-## 📚 Documentation
-
-### Comprehensive Guides
-
-- **[Architecture Guide](doc/ARCHITECTURE.md)** - System architecture, component diagrams, and design decisions
-- **[Shader Implementation Guide](doc/SHADER_GUIDE.md)** - Detailed WGSL shader documentation and optimization
-- **[Performance Tuning Guide](doc/PERFORMANCE_TUNING.md)** - Hardware-specific optimizations and benchmarking
-- **[Supported Models](doc/SUPPORTED_MODELS.md)** - Model compatibility and configuration
-- **[FP16 Implementation](doc/FP16_IMPLEMENTATION.md)** - Mixed-precision inference details
-
-### Examples
-
-- **[Basic Inference](crates/janus-engine/examples/inference.rs)** - Simple single-sequence generation
-- **[Batch Inference](crates/janus-engine/examples/batch_inference.rs)** - Process multiple prompts in parallel
-- **[Streaming Generation](crates/janus-engine/examples/streaming.rs)** - Token-by-token streaming output
-- **[Plugin Development](crates/janus-engine/examples/plugin_development.rs)** - Create custom inference plugins
-
-### API Reference
-
-- [janus-router README](crates/janus-router/README.md) - Routing logic documentation
-- [API Documentation](https://docs.rs/janus-engine) - Coming soon
-
-## 🐛 Troubleshooting
-
-### GPU Not Detected
-Ensure you have proper GPU drivers installed:
-- **Vulkan**: Install Vulkan SDK
-- **Metal**: macOS 10.13+ with Metal support
-- **DirectX 12**: Windows 10+ with DX12 support
-
-### Out of Memory
-Reduce model size or batch size. For large models, ensure you have sufficient VRAM:
-- 7B models: 4-6GB VRAM
-- 13B models: 8-12GB VRAM
-
-### Slow Inference
-Check that:
-- Release mode is enabled: `cargo build --release`
-- GPU is being used (check logs)
-- No background GPU processes are competing for resources
-
-**See [Performance Tuning Guide](doc/PERFORMANCE_TUNING.md) for detailed optimization strategies.**
-
----
-
-**Status**: Active development | **Version**: 0.1.0 | **Rust Edition**: 2024
+LGPL-3.0-or-later. See `LICENSE`.

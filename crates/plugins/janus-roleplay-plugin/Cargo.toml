@@ -12,5 +12,4 @@ workspace = true
 crate-type = ["cdylib"]
 
 [dependencies]
-janus-api = { path = "../../janus-api" }
-abi_stable = { workspace = true }
+janus-engine = { path = "../../janus-engine" }
