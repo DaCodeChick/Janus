@@ -15,6 +15,41 @@ static LLAMA3_SPLIT_RE: LazyLock<Regex> = LazyLock::new(|| {
     .expect("valid llama3 split regex")
 });
 
+static BYTE_TO_UNICODE: LazyLock<[char; 256]> = LazyLock::new(|| {
+    let mut bs = ['\0'; 256];
+    let mut mapped = [false; 256];
+    for b in 33u8..=126u8 {
+        bs[b as usize] = b as char;
+        mapped[b as usize] = true;
+    }
+    for b in 161u8..=172u8 {
+        bs[b as usize] = b as char;
+        mapped[b as usize] = true;
+    }
+    for b in 174u8..=255u8 {
+        bs[b as usize] = b as char;
+        mapped[b as usize] = true;
+    }
+
+    let mut n = 0;
+    for b in 0..=255 {
+        if !mapped[b as usize] {
+            bs[b as usize] = std::char::from_u32(256 + n).unwrap();
+            mapped[b as usize] = true;
+            n += 1;
+        }
+    }
+    bs
+});
+
+static UNICODE_TO_BYTE: LazyLock<HashMap<char, u8>> = LazyLock::new(|| {
+    let mut map = HashMap::with_capacity(256);
+    for (b, &c) in BYTE_TO_UNICODE.iter().enumerate() {
+        map.insert(c, b as u8);
+    }
+    map
+});
+
 /// Tokenizer errors
 #[derive(Error, Debug)]
 pub enum TokenizerError {
@@ -123,8 +158,14 @@ impl GgufTokenizer {
             return Ok(());
         }
 
-        // Start from byte-level atoms (must exist in vocab for pure byte fallback).
-        let mut parts: Vec<Vec<u8>> = bytes.iter().map(|b| vec![*b]).collect();
+        let mut parts: Vec<Vec<u8>> = bytes
+            .iter()
+            .map(|&b| {
+                let c = BYTE_TO_UNICODE[b as usize];
+                let mut buf = [0; 4];
+                c.encode_utf8(&mut buf).as_bytes().to_vec()
+            })
+            .collect();
 
         loop {
             if parts.len() < 2 {
@@ -180,19 +221,26 @@ impl GgufTokenizer {
 
     /// Decode a sequence of token IDs into text.
     pub fn decode_batch(&self, token_ids: &[u32]) -> Result<String> {
-        let mut bytes = Vec::new();
+        let mut raw_bytes = Vec::new();
         for &id in token_ids {
             if id == Self::LLAMA3_BOS_TOKEN_ID || id == Self::LLAMA3_EOT_TOKEN_ID {
                 continue;
             }
 
-            let tok = self.id_to_token.get(id as usize).ok_or_else(|| {
+            let mapped_tok = self.id_to_token.get(id as usize).ok_or_else(|| {
                 TokenizerError::DecodeFailed(format!("token id out of range: {}", id))
             })?;
-            bytes.extend_from_slice(tok);
+
+            if let Ok(s) = std::str::from_utf8(mapped_tok) {
+                for c in s.chars() {
+                    if let Some(&b) = UNICODE_TO_BYTE.get(&c) {
+                        raw_bytes.push(b);
+                    }
+                }
+            }
         }
 
-        String::from_utf8(bytes).map_err(|e| TokenizerError::DecodeFailed(e.to_string()))
+        String::from_utf8(raw_bytes).map_err(|e| TokenizerError::DecodeFailed(e.to_string()))
     }
 
     /// Get vocabulary size.
