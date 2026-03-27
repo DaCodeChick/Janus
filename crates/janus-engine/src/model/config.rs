@@ -354,7 +354,7 @@ fn metadata_array_len_as_u32(metadata: &GgufMetadata, key: &str) -> Option<u32> 
 
 fn metadata_string(metadata: &GgufMetadata, key: &str) -> Option<String> {
     match metadata.metadata.get(key) {
-        Some(MetadataValue::String(v)) => Some(v.clone()),
+        Some(MetadataValue::Bytes(v)) => String::from_utf8(v.clone()).ok(),
         _ => None,
     }
 }

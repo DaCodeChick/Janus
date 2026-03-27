@@ -118,7 +118,7 @@ pub enum MetadataValue {
     Int32(i32),
     Float32(f32),
     Bool(bool),
-    String(String),
+    Bytes(Vec<u8>),
     Array(Vec<MetadataValue>),
     UInt64(u64),
     Int64(i64),

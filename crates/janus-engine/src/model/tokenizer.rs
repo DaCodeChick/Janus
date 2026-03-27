@@ -240,74 +240,13 @@ impl GgufTokenizer {
         Self::metadata_array(metadata, key)?
             .iter()
             .map(|value| match value {
-                MetadataValue::String(s) => Ok(Self::unescape_gguf_token_literal(s)),
+                MetadataValue::Bytes(bytes) => Ok(bytes.clone()),
                 _ => Err(TokenizerError::InvalidGgufMetadata(format!(
                     "metadata key '{}' contains a non-string token entry",
                     key
                 ))),
             })
             .collect()
-    }
-
-    fn unescape_gguf_token_literal(input: &str) -> Vec<u8> {
-        let bytes = input.as_bytes();
-        let mut out = Vec::with_capacity(bytes.len());
-        let mut i = 0usize;
-
-        while i < bytes.len() {
-            if bytes[i] != b'\\' || i + 1 >= bytes.len() {
-                out.push(bytes[i]);
-                i += 1;
-                continue;
-            }
-
-            let esc = bytes[i + 1];
-            match esc {
-                b'n' => {
-                    out.push(b'\n');
-                    i += 2;
-                }
-                b'r' => {
-                    out.push(b'\r');
-                    i += 2;
-                }
-                b't' => {
-                    out.push(b'\t');
-                    i += 2;
-                }
-                b'\\' => {
-                    out.push(b'\\');
-                    i += 2;
-                }
-                b'\'' => {
-                    out.push(b'\'');
-                    i += 2;
-                }
-                b'"' => {
-                    out.push(b'"');
-                    i += 2;
-                }
-                b'x' => {
-                    if i + 3 < bytes.len() {
-                        let h1 = bytes[i + 2] as char;
-                        let h2 = bytes[i + 3] as char;
-                        if let (Some(a), Some(b)) = (h1.to_digit(16), h2.to_digit(16)) {
-                            out.push(((a << 4) | b) as u8);
-                            i += 4;
-                            continue;
-                        }
-                    }
-                    out.push(bytes[i]);
-                    i += 1;
-                }
-                _ => {
-                    out.push(bytes[i]);
-                    i += 1;
-                }
-            }
-        }
-
-        out
     }
 
     fn metadata_f32_array(metadata: &GgufMetadata, key: &str) -> Result<Vec<f32>> {
@@ -353,11 +292,5 @@ mod tests {
             .map(|m| m.expect("regex match").as_str().to_string())
             .collect();
         assert!(!chunks.is_empty());
-    }
-
-    #[test]
-    fn test_unescape_newline_literal() {
-        let bytes = GgufTokenizer::unescape_gguf_token_literal("\\n");
-        assert_eq!(bytes, vec![b'\n']);
     }
 }

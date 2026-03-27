@@ -139,8 +139,8 @@ impl GgufParser {
     }
 }
 
-/// Parse a GGUF string (u64 length + UTF-8 bytes)
-fn parse_string<R: Read>(reader: &mut R) -> Result<String> {
+/// Parse GGUF bytes payload (u64 length + raw bytes)
+fn parse_bytes<R: Read>(reader: &mut R) -> Result<Vec<u8>> {
     let len = reader
         .read_u64::<LittleEndian>()
         .map_err(|_| GgufError::IncompleteData("Failed to read string length".into()))?;
@@ -150,7 +150,14 @@ fn parse_string<R: Read>(reader: &mut R) -> Result<String> {
         .read_exact(&mut bytes)
         .map_err(|_| GgufError::IncompleteData("Failed to read string data".into()))?;
 
-    Ok(String::from_utf8_lossy(&bytes).into_owned())
+    Ok(bytes)
+}
+
+/// Parse a GGUF key string (u64 length + UTF-8 bytes)
+fn parse_key_string<R: Read>(reader: &mut R) -> Result<String> {
+    let bytes = parse_bytes(reader)?;
+    String::from_utf8(bytes)
+        .map_err(|e| GgufError::ParseError(format!("Invalid UTF-8 in metadata key: {}", e)))
 }
 
 /// Parse a metadata value
@@ -203,7 +210,7 @@ fn parse_metadata_value<R: Read>(reader: &mut R) -> Result<MetadataValue> {
                 .map_err(|_| GgufError::IncompleteData("Failed to read Bool".into()))?
                 != 0,
         )),
-        MetadataValueType::String => Ok(MetadataValue::String(parse_string(reader)?)),
+        MetadataValueType::String => Ok(MetadataValue::Bytes(parse_bytes(reader)?)),
         MetadataValueType::Array => {
             // Array: type + count + elements
             let elem_type = reader.read_u32::<LittleEndian>().map_err(|_| {
@@ -287,7 +294,7 @@ fn parse_array_element<R: Read>(
                 .map_err(|_| GgufError::IncompleteData("Failed to read array Bool".into()))?
                 != 0,
         )),
-        MetadataValueType::String => Ok(MetadataValue::String(parse_string(reader)?)),
+        MetadataValueType::String => Ok(MetadataValue::Bytes(parse_bytes(reader)?)),
         MetadataValueType::UInt64 => Ok(MetadataValue::UInt64(
             reader
                 .read_u64::<LittleEndian>()
@@ -317,7 +324,7 @@ fn parse_metadata_kvs<R: Read>(
     let mut metadata = HashMap::with_capacity(count);
 
     for _ in 0..count {
-        let key = parse_string(reader)?;
+        let key = parse_key_string(reader)?;
         let value = parse_metadata_value(reader)?;
         metadata.insert(key, value);
     }
@@ -330,7 +337,7 @@ fn parse_tensor_infos<R: Read>(reader: &mut R, count: usize) -> Result<Vec<Tenso
     let mut tensors = Vec::with_capacity(count);
 
     for _ in 0..count {
-        let name = parse_string(reader)?;
+        let name = parse_key_string(reader)?;
         let n_dimensions = reader.read_u32::<LittleEndian>().map_err(|_| {
             GgufError::IncompleteData("Failed to read tensor dimension count".into())
         })?;
@@ -418,15 +425,15 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_string() {
+    fn test_parse_bytes() {
         let mut data = Vec::new();
         let test_str = "test_string";
         data.extend_from_slice(&(test_str.len() as u64).to_le_bytes());
         data.extend_from_slice(test_str.as_bytes());
 
         let mut reader = Cursor::new(&data);
-        let result = parse_string(&mut reader).unwrap();
-        assert_eq!(result, test_str);
+        let result = parse_bytes(&mut reader).unwrap();
+        assert_eq!(result, test_str.as_bytes());
     }
 
     #[test]
@@ -456,7 +463,7 @@ mod tests {
         let result = parse_metadata_value(&mut reader).unwrap();
 
         match result {
-            MetadataValue::String(val) => assert_eq!(val, test_str),
+            MetadataValue::Bytes(val) => assert_eq!(val, test_str.as_bytes()),
             _ => panic!("Expected String metadata value"),
         }
     }

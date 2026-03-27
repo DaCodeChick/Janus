@@ -86,7 +86,7 @@ impl GgufFile {
             MetadataValue::Int32(v) => v.to_string(),
             MetadataValue::Float32(v) => v.to_string(),
             MetadataValue::Bool(v) => v.to_string(),
-            MetadataValue::String(v) => v.clone(),
+            MetadataValue::Bytes(v) => String::from_utf8_lossy(v).into_owned(),
             MetadataValue::Array(_) => "[array]".to_string(),
             MetadataValue::UInt64(v) => v.to_string(),
             MetadataValue::Int64(v) => v.to_string(),
