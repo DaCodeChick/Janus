@@ -86,10 +86,12 @@ impl Model {
     pub async fn generate(&mut self, prompt: &str, max_tokens: usize) -> Result<String> {
         // Step A: Tokenize the prompt
         tracing::info!("Tokenizing prompt: \"{}\"", prompt);
+        println!("🤖 [Stream] Tokenizing prompt...");
         let mut token_ids = self
             .tokenizer
             .encode(prompt, true)
             .map_err(|e| crate::compute::ComputeError::Other(format!("Tokenization failed: {}", e)))?;
+        println!("✅ [Stream] Tokenization finished! Handing off to WebGPU...");
 
         // Keep BOS from tokenizer special-token handling, but avoid seeding decode from EOS.
         if let Some(eos_token_id) = self.tokenizer.eos_token_id() {
@@ -296,10 +298,12 @@ impl Model {
     {
         // Tokenize the prompt
         tracing::info!("Tokenizing prompt: \"{}\"", prompt);
+        println!("🤖 [Stream] Tokenizing prompt...");
         let mut token_ids = self
             .tokenizer
             .encode(prompt, true)
             .map_err(|e| crate::compute::ComputeError::Other(format!("Tokenization failed: {}", e)))?;
+        println!("✅ [Stream] Tokenization finished! Handing off to WebGPU...");
 
         // Keep BOS from tokenizer special-token handling, but avoid seeding decode from EOS.
         if let Some(eos_token_id) = self.tokenizer.eos_token_id() {
@@ -632,10 +636,12 @@ impl Model {
 
         for (idx, prompt) in prompts.iter().enumerate() {
             tracing::info!("Tokenizing prompt {}/{}: \"{}\"", idx + 1, batch_size, prompt);
+            println!("🤖 [Stream] Tokenizing prompt...");
             let mut token_ids = self
                 .tokenizer
                 .encode(prompt, true)
                 .map_err(|e| crate::compute::ComputeError::Other(format!("Tokenization failed for prompt {}: {}", idx, e)))?;
+            println!("✅ [Stream] Tokenization finished! Handing off to WebGPU...");
 
             if let Some(eos_id) = eos_token_id {
                 if token_ids.last() == Some(&eos_id) {

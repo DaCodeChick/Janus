@@ -73,9 +73,7 @@ fn rmsnorm(
     let tid = local_id.x;
     let batch_idx = workgroup_id.x;  // Each workgroup handles one sequence
     
-    if (batch_idx >= rms_uniforms.batch_size) {
-        return;
-    }
+    let is_active = batch_idx < rms_uniforms.batch_size;
     
     let hidden_dim = rms_uniforms.hidden_dim;
     let base_idx = batch_idx * hidden_dim;
@@ -85,11 +83,13 @@ fn rmsnorm(
     
     // Each thread accumulates sum of squares for its stride within this sequence
     var idx = tid;
-    while (idx < hidden_dim) {
-        let global_idx = base_idx + idx;
-        let val = rms_input[global_idx];
-        local_sum = local_sum + val * val;
-        idx = idx + 256u;  // workgroup_size
+    if (is_active) {
+        while (idx < hidden_dim) {
+            let global_idx = base_idx + idx;
+            let val = rms_input[global_idx];
+            local_sum = local_sum + val * val;
+            idx = idx + 256u;  // workgroup_size
+        }
     }
     
     // Store in shared memory
@@ -109,22 +109,26 @@ fn rmsnorm(
     
     // Thread 0 has the final sum of squares for this sequence
     var rms: f32;
-    if (tid == 0u) {
+    if (tid == 0u && is_active) {
         let mean_square = shared_sum[0] / f32(hidden_dim);
         rms = sqrt(mean_square + rms_uniforms.epsilon);
         // Store RMS in shared memory for all threads to access
         shared_sum[0] = rms;
+    } else if (tid == 0u) {
+        shared_sum[0] = 1.0;
     }
     workgroupBarrier();
     
     // Phase 2: Normalize each element and apply gamma weights
     rms = shared_sum[0];
     idx = tid;
-    while (idx < hidden_dim) {
-        let global_idx = base_idx + idx;
-        let normalized = rms_input[global_idx] / rms;
-        // Gamma weights are shared across batch, indexed by position in hidden_dim
-        rms_output[global_idx] = normalized * gamma[idx];
-        idx = idx + 256u;
+    if (is_active) {
+        while (idx < hidden_dim) {
+            let global_idx = base_idx + idx;
+            let normalized = rms_input[global_idx] / rms;
+            // Gamma weights are shared across batch, indexed by position in hidden_dim
+            rms_output[global_idx] = normalized * gamma[idx];
+            idx = idx + 256u;
+        }
     }
 }

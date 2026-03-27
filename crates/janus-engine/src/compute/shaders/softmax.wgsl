@@ -32,19 +32,18 @@ fn main(
     let thread_idx = local_id.x;
     let seq_len = params.seq_len;
     
-    // Early exit if this workgroup is beyond batch size
-    if (row_idx >= params.batch_size) {
-        return;
-    }
+    let is_active = row_idx < params.batch_size;
     
     // Pass 1: Find maximum value in this row for numerical stability
     var local_max: f32 = -1e10;
     
     // Each thread processes multiple elements if seq_len > 256
-    for (var i = thread_idx; i < seq_len; i += 256u) {
-        // CRITICAL: Use max_seq_len for stride since buffer is [batch, heads, max_seq_len]
-        let idx = row_idx * params.max_seq_len + i;
-        local_max = max(local_max, input[idx]);
+    if (is_active) {
+        for (var i = thread_idx; i < seq_len; i += 256u) {
+            // CRITICAL: Use max_seq_len for stride since buffer is [batch, heads, max_seq_len]
+            let idx = row_idx * params.max_seq_len + i;
+            local_max = max(local_max, input[idx]);
+        }
     }
     
     // Store local max in shared memory
@@ -64,12 +63,14 @@ fn main(
     // Pass 2: Compute exp(x - max) and accumulate sum
     var local_sum: f32 = 0.0;
     
-    for (var i = thread_idx; i < seq_len; i += 256u) {
-        // CRITICAL: Use max_seq_len for stride since buffer is [batch, heads, max_seq_len]
-        let idx = row_idx * params.max_seq_len + i;
-        let exp_val = exp(input[idx] - max_val);
-        output[idx] = exp_val;  // Store intermediate exp values
-        local_sum += exp_val;
+    if (is_active) {
+        for (var i = thread_idx; i < seq_len; i += 256u) {
+            // CRITICAL: Use max_seq_len for stride since buffer is [batch, heads, max_seq_len]
+            let idx = row_idx * params.max_seq_len + i;
+            let exp_val = exp(input[idx] - max_val);
+            output[idx] = exp_val;  // Store intermediate exp values
+            local_sum += exp_val;
+        }
     }
     
     // Store local sum in shared memory
@@ -87,9 +88,11 @@ fn main(
     let sum_val = shared_data[0];
     
     // Pass 3: Normalize by dividing by sum
-    for (var i = thread_idx; i < seq_len; i += 256u) {
-        // CRITICAL: Use max_seq_len for stride since buffer is [batch, heads, max_seq_len]
-        let idx = row_idx * params.max_seq_len + i;
-        output[idx] = output[idx] / sum_val;
+    if (is_active) {
+        for (var i = thread_idx; i < seq_len; i += 256u) {
+            // CRITICAL: Use max_seq_len for stride since buffer is [batch, heads, max_seq_len]
+            let idx = row_idx * params.max_seq_len + i;
+            output[idx] = output[idx] / sum_val;
+        }
     }
 }
