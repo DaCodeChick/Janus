@@ -14,6 +14,7 @@ fn test_model_config() {
         vocab_size: 32000,
         max_seq_len: 2048,
         rms_norm_eps: 1e-5,
+        rope_freq_base: 10000.0,
         batch_size: 1,
     };
 
@@ -39,6 +40,7 @@ async fn test_model_block_count_validation() {
         vocab_size: 1000,
         max_seq_len: 128,
         rms_norm_eps: 1e-5,
+        rope_freq_base: 10000.0,
         batch_size: 1,
     };
     

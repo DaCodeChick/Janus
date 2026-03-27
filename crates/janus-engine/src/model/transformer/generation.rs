@@ -3,6 +3,9 @@
 use super::Model;
 use crate::compute::Result;
 
+const LLAMA3_END_OF_TEXT_ID: u32 = 128_001;
+const LLAMA3_EOT_ID: u32 = 128_009;
+
 #[derive(Debug, Clone)]
 pub struct GenerationResult {
     pub text: String,
@@ -143,6 +146,11 @@ impl Model {
         let eos_token_id = self.tokenizer.eos_token_id();
 
         for step in 0..max_tokens {
+            if tokens_generated as usize >= max_tokens {
+                tracing::warn!("Hard stop: reached max_new_tokens={}", max_tokens);
+                break;
+            }
+
             // Check sequence length limit
             if seq_pos >= self.config.max_seq_len {
                 tracing::warn!("Reached maximum sequence length: {}", self.config.max_seq_len);
@@ -170,11 +178,24 @@ impl Model {
                     &generated_tokens,
                 )
                 .await?;
-            
+
+            println!("[sampled_token_id] {}", next_token);
             tracing::debug!("Sampled token ID: {}", next_token);
 
             // Increment tokens generated counter
             tokens_generated += 1;
+
+            if next_token == LLAMA3_END_OF_TEXT_ID || next_token == LLAMA3_EOT_ID {
+                tracing::info!(
+                    "Generated Llama 3 stop token (ID: {}), stopping generation",
+                    next_token
+                );
+                eprintln!(
+                    "\n[Generation stopped: Llama 3 stop token (ID: {}) generated]",
+                    next_token
+                );
+                break;
+            }
 
             // Check tokenizer-configured EOS token dynamically
             if let Some(eos_id) = eos_token_id {
@@ -337,6 +358,12 @@ impl Model {
         let mut finish_reason = String::from("stop");
 
         for step in 0..max_tokens {
+            if tokens_generated as usize >= max_tokens {
+                tracing::warn!("Hard stop: reached max_new_tokens={}", max_tokens);
+                finish_reason = String::from("length");
+                break;
+            }
+
             // Check sequence length limit
             if seq_pos >= self.config.max_seq_len {
                 tracing::warn!("Reached maximum sequence length: {}", self.config.max_seq_len);
@@ -364,9 +391,19 @@ impl Model {
                     &generated_tokens,
                 )
                 .await?;
-            
+
+            println!("[sampled_token_id] {}", next_token);
             tracing::debug!("Sampled token ID: {}", next_token);
             tokens_generated += 1;
+
+            if next_token == LLAMA3_END_OF_TEXT_ID || next_token == LLAMA3_EOT_ID {
+                tracing::info!(
+                    "Generated Llama 3 stop token (ID: {}), stopping generation",
+                    next_token
+                );
+                finish_reason = String::from("stop");
+                break;
+            }
 
             // Check tokenizer-configured EOS token dynamically
             if let Some(eos_id) = eos_token_id {
@@ -674,6 +711,14 @@ impl Model {
         let mut total_tokens_generated = 0;
 
         for step in 0..max_tokens {
+            if total_tokens_generated >= (max_tokens * batch_size) {
+                tracing::warn!(
+                    "Hard stop: reached max_new_tokens across batch ({} total)",
+                    max_tokens * batch_size
+                );
+                break;
+            }
+
             // Check if all sequences are finished
             if finished.iter().all(|&f| f) {
                 tracing::info!("All sequences finished at step {}", step);
@@ -704,9 +749,16 @@ impl Model {
             for i in 0..batch_size {
                 if !finished[i] {
                     let next_token = next_tokens[i];
+                    println!("[sampled_token_id][seq={}] {}", i, next_token);
                     last_tokens[i] = next_token;
                     generated_tokens[i].push(next_token);
                     total_tokens_generated += 1;
+
+                    if next_token == LLAMA3_END_OF_TEXT_ID || next_token == LLAMA3_EOT_ID {
+                        finished[i] = true;
+                        tracing::info!("Sequence {} finished (Llama 3 stop token)", i + 1);
+                        continue;
+                    }
 
                     // Check for EOS
                     if let Some(eos_id) = eos_token_id {

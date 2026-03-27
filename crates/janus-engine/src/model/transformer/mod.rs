@@ -31,6 +31,7 @@
 //!         vocab_size: 32000,
 //!         max_seq_len: 2048,
 //!         rms_norm_eps: 1e-5,
+//!         rope_freq_base: 10000.0,
 //!     };
 //!     
 //!     // 5. Load weights from GGUF file (pseudocode - actual loader TBD)
@@ -94,6 +95,8 @@ pub struct ModelConfig {
     pub max_seq_len: u32,
     /// RMSNorm epsilon
     pub rms_norm_eps: f32,
+    /// RoPE frequency base (theta), e.g. 10000.0 (Llama 2) or 500000.0 (Llama 3)
+    pub rope_freq_base: f32,
     /// Batch size for parallel sequence processing (default: 1)
     /// 
     /// Number of sequences to process in parallel. Higher batch sizes improve

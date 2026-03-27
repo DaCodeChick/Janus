@@ -345,8 +345,12 @@ impl Model {
 
         // === RoPE Cache: Pre-compute sin/cos values ===
         tracing::info!("Pre-computing RoPE sin/cos cache...");
-        let rope_cache =
-            Self::create_rope_cache(device, config.max_seq_len, config.head_dim, 10000.0);
+        let rope_cache = Self::create_rope_cache(
+            device,
+            config.max_seq_len,
+            config.head_dim,
+            config.rope_freq_base,
+        );
 
         tracing::info!(
             "Allocated scratch buffers (batch_size={}): hidden={}KB, q/k/v={}KB, ffn={}KB, logits={}KB",

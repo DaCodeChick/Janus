@@ -284,6 +284,7 @@ impl From<&HuggingFaceConfig> for crate::model::ModelConfig {
             vocab_size: config.vocab_size,
             max_seq_len: config.max_seq_len(),
             rms_norm_eps: config.rms_norm_eps,
+            rope_freq_base: 10000.0,
             batch_size: 1, // Default to single-sequence inference
         }
     }
@@ -384,6 +385,12 @@ pub fn model_config_from_gguf_metadata(
         metadata,
         &format!("{}.attention.layer_norm_rms_epsilon", architecture),
     )?;
+    let rope_freq_base =
+        match metadata_as_f32(metadata, &format!("{}.rope.freq_base", architecture)) {
+            Ok(v) => v,
+            Err(ConfigError::MissingGgufMetadata { .. }) => 10000.0,
+            Err(e) => return Err(e),
+        };
 
     let vocab_size = match metadata_as_u32(metadata, &format!("{}.vocab_size", architecture)) {
         Ok(v) => v,
@@ -404,6 +411,7 @@ pub fn model_config_from_gguf_metadata(
         vocab_size,
         max_seq_len,
         rms_norm_eps,
+        rope_freq_base,
         batch_size: 1,
     })
 }
