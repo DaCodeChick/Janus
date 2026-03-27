@@ -11,6 +11,7 @@ workspace = true
 [features]
 default = [
     "imggen",
+    "ground",
     "instruct",
     "knowledge",
     "lora",
@@ -22,6 +23,7 @@ default = [
     "voice",
 ]
 imggen = ["dep:janus-mod-imggen"]
+ground = ["dep:janus-mod-ground"]
 instruct = ["dep:janus-mod-instruct"]
 knowledge = ["dep:janus-mod-knowledge"]
 lora = ["dep:janus-mod-lora"]
@@ -35,6 +37,7 @@ voice = ["dep:janus-mod-voice"]
 [dependencies]
 janus-engine = { path = "../janus-engine" }
 janus-mod-imggen = { path = "../janus-mod-imggen", optional = true }
+janus-mod-ground = { path = "../janus-mod-ground", optional = true }
 janus-mod-instruct = { path = "../janus-mod-instruct", optional = true }
 janus-mod-knowledge = { path = "../janus-mod-knowledge", optional = true }
 janus-mod-lora = { path = "../janus-mod-lora", optional = true }

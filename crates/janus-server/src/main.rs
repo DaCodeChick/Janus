@@ -9,6 +9,8 @@ use janus_engine::{
 };
 #[cfg(feature = "imggen")]
 use janus_mod_imggen::ImgGenPlugin;
+#[cfg(feature = "ground")]
+use janus_mod_ground::GroundPlugin;
 #[cfg(feature = "instruct")]
 use janus_mod_instruct::InstructPlugin;
 #[cfg(feature = "knowledge")]
@@ -182,6 +184,8 @@ async fn main() -> Result<()> {
     let args = Args::parse();
 
     let mut app = JanusApp::new();
+    #[cfg(feature = "ground")]
+    app.add_plugin(GroundPlugin);
     #[cfg(feature = "instruct")]
     app.add_plugin(InstructPlugin);
     #[cfg(feature = "knowledge")]

@@ -3,6 +3,7 @@ members = [
     "crates/janus-engine",
     "crates/janus-server",
     "crates/janus-mod-imggen",
+    "crates/janus-mod-ground",
     "crates/janus-mod-instruct",
     "crates/janus-mod-knowledge",
     "crates/janus-mod-lora",
