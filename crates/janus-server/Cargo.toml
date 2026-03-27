@@ -8,19 +8,43 @@ authors.workspace = true
 [lints]
 workspace = true
 
+[features]
+default = [
+    "imggen",
+    "instruct",
+    "knowledge",
+    "lora",
+    "rp",
+    "tts",
+    "vecmem",
+    "vision",
+    "vismem",
+    "voice",
+]
+imggen = ["dep:janus-mod-imggen"]
+instruct = ["dep:janus-mod-instruct"]
+knowledge = ["dep:janus-mod-knowledge"]
+lora = ["dep:janus-mod-lora"]
+rp = ["dep:janus-mod-rp"]
+tts = ["dep:janus-mod-tts"]
+vecmem = ["dep:janus-mod-vecmem"]
+vision = ["dep:janus-mod-vision"]
+vismem = ["dep:janus-mod-vismem"]
+voice = ["dep:janus-mod-voice"]
+
 [dependencies]
 janus-engine = { path = "../janus-engine" }
-janus-mod-imggen = { path = "../janus-mod-imggen" }
-janus-mod-instruct = { path = "../janus-mod-instruct" }
-janus-mod-knowledge = { path = "../janus-mod-knowledge" }
-janus-mod-lora = { path = "../janus-mod-lora" }
+janus-mod-imggen = { path = "../janus-mod-imggen", optional = true }
+janus-mod-instruct = { path = "../janus-mod-instruct", optional = true }
+janus-mod-knowledge = { path = "../janus-mod-knowledge", optional = true }
+janus-mod-lora = { path = "../janus-mod-lora", optional = true }
 janus-router = { path = "../janus-router" }
-janus-mod-rp = { path = "../janus-mod-rp" }
-janus-mod-tts = { path = "../janus-mod-tts" }
-janus-mod-vecmem = { path = "../janus-mod-vecmem" }
-janus-mod-vision = { path = "../janus-mod-vision" }
-janus-mod-vismem = { path = "../janus-mod-vismem" }
-janus-mod-voice = { path = "../janus-mod-voice" }
+janus-mod-rp = { path = "../janus-mod-rp", optional = true }
+janus-mod-tts = { path = "../janus-mod-tts", optional = true }
+janus-mod-vecmem = { path = "../janus-mod-vecmem", optional = true }
+janus-mod-vision = { path = "../janus-mod-vision", optional = true }
+janus-mod-vismem = { path = "../janus-mod-vismem", optional = true }
+janus-mod-voice = { path = "../janus-mod-voice", optional = true }
 clap = { version = "=4.5.55", features = ["derive"] }
 
 # Web server

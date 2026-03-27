@@ -7,15 +7,25 @@ use janus_engine::{
     Model, ModelConfig, SafetensorsLoader, Sampler, SamplerConfig, Tokenizer, TransformerBlock,
     TransformerBlockConfig,
 };
+#[cfg(feature = "imggen")]
 use janus_mod_imggen::ImgGenPlugin;
+#[cfg(feature = "instruct")]
 use janus_mod_instruct::InstructPlugin;
+#[cfg(feature = "knowledge")]
 use janus_mod_knowledge::KnowledgePlugin;
+#[cfg(feature = "lora")]
 use janus_mod_lora::LoraPlugin;
+#[cfg(feature = "rp")]
 use janus_mod_rp::RpPlugin;
+#[cfg(feature = "tts")]
 use janus_mod_tts::TtsPlugin;
+#[cfg(feature = "vecmem")]
 use janus_mod_vecmem::VecMemPlugin;
+#[cfg(feature = "vision")]
 use janus_mod_vision::VisionPlugin;
+#[cfg(feature = "vismem")]
 use janus_mod_vismem::VisMemPlugin;
+#[cfg(feature = "voice")]
 use janus_mod_voice::VoicePlugin;
 use janus_server::{create_router, handlers::AppState};
 use std::collections::HashMap;
@@ -166,16 +176,26 @@ async fn main() -> Result<()> {
     let args = Args::parse();
 
     let mut app = JanusApp::new();
-    app.add_plugin(InstructPlugin)
-        .add_plugin(KnowledgePlugin)
-        .add_plugin(LoraPlugin)
-        .add_plugin(RpPlugin)
-        .add_plugin(TtsPlugin)
-        .add_plugin(VecMemPlugin)
-        .add_plugin(VisionPlugin)
-        .add_plugin(VisMemPlugin)
-        .add_plugin(VoicePlugin)
-        .add_plugin(ImgGenPlugin);
+    #[cfg(feature = "instruct")]
+    app.add_plugin(InstructPlugin);
+    #[cfg(feature = "knowledge")]
+    app.add_plugin(KnowledgePlugin);
+    #[cfg(feature = "lora")]
+    app.add_plugin(LoraPlugin);
+    #[cfg(feature = "rp")]
+    app.add_plugin(RpPlugin);
+    #[cfg(feature = "tts")]
+    app.add_plugin(TtsPlugin);
+    #[cfg(feature = "vecmem")]
+    app.add_plugin(VecMemPlugin);
+    #[cfg(feature = "vision")]
+    app.add_plugin(VisionPlugin);
+    #[cfg(feature = "vismem")]
+    app.add_plugin(VisMemPlugin);
+    #[cfg(feature = "voice")]
+    app.add_plugin(VoicePlugin);
+    #[cfg(feature = "imggen")]
+    app.add_plugin(ImgGenPlugin);
 
     let (model_path, model_dir) = resolve_model_paths(&args.model)?;
     let config_path = model_dir.join("config.json");
