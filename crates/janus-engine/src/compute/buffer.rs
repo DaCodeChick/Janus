@@ -161,18 +161,26 @@ impl Buffer {
 
         // Map and read
         let buffer_slice = staging_buffer.slice(..);
-        let (sender, receiver) = tokio::sync::oneshot::channel();
+        let (sender, mut receiver) = tokio::sync::oneshot::channel();
 
         buffer_slice.map_async(wgpu::MapMode::Read, move |result| {
             let _ = sender.send(result);
         });
 
-        let _ = device.poll(wgpu::PollType::wait_indefinitely());
+        let map_result = loop {
+            let _ = device.poll(wgpu::PollType::Poll);
+            match receiver.try_recv() {
+                Ok(res) => break res,
+                Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {
+                    tokio::task::yield_now().await;
+                }
+                Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
+                    return Err(ComputeError::BufferMappingFailed);
+                }
+            }
+        };
 
-        receiver
-            .await
-            .map_err(|_| ComputeError::BufferMappingFailed)?
-            .map_err(|_| ComputeError::BufferMappingFailed)?;
+        map_result.map_err(|_| ComputeError::BufferMappingFailed)?;
 
         let data = buffer_slice.get_mapped_range().to_vec();
         staging_buffer.unmap();
