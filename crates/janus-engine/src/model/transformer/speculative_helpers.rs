@@ -41,21 +41,30 @@ impl Model {
         queue.submit(Some(encoder.finish()));
 
         // Map and read
+        println!("🔍 [Debug] About to map buffer. Ensuring queue is submitted...");
         let buffer_slice = staging_buffer.slice(..);
         let (sender, mut receiver) = tokio::sync::oneshot::channel();
         buffer_slice.map_async(wgpu::MapMode::Read, move |result| {
             let _ = sender.send(result);
         });
 
+        let mut spin_count: u64 = 0;
         let map_result = loop {
             let _ = device.poll(wgpu::PollType::Poll);
             match receiver.try_recv() {
                 Ok(res) => break res,
                 Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {
-                    tokio::task::yield_now().await;
+                    spin_count += 1;
+                    if spin_count.is_multiple_of(10_000) {
+                        println!(
+                            "⚠️ [Debug] Polling loop has spun {} times. GPU callback is not firing.",
+                            spin_count
+                        );
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(1)).await;
                 }
                 Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
-                    panic!("FATAL: WebGPU aborted the pipeline! Check terminal for wgpu validation errors (e.g., out-of-bounds buffer copy, size mismatch).");
+                    panic!("FATAL: WebGPU aborted!");
                 }
             }
         };

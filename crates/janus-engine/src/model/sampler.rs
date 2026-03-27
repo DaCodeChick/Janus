@@ -187,6 +187,11 @@ impl Sampler {
         // Slow path: CPU-side sampling with full feature support
         // Read logits from GPU to CPU
         let mut logits = self.read_logits_from_gpu(engine, logits_buffer).await?;
+        println!("🔍 [Debug] Logits read back. Checking for NaNs...");
+        if logits.iter().any(|&x| x.is_nan()) {
+            panic!("FATAL MATH ERROR: GPU returned NaN logits. Shader dequantization (Q6_K mismatch) or RoPE base is corrupted.");
+        }
+        println!("✅ [Debug] Logits are valid. Entering sampler...");
 
         // Apply repetition penalty to prevent infinite loops
         self.apply_repetition_penalty(&mut logits, context);
@@ -258,21 +263,30 @@ impl Sampler {
         queue.submit(Some(encoder.finish()));
 
         // Map staging buffer and read result
+        println!("🔍 [Debug] About to map buffer. Ensuring queue is submitted...");
         let buffer_slice = staging_buffer.slice(..);
         let (sender, mut receiver) = tokio::sync::oneshot::channel();
         buffer_slice.map_async(wgpu::MapMode::Read, move |result| {
             let _ = sender.send(result);
         });
 
+        let mut spin_count: u64 = 0;
         let map_result = loop {
             let _ = device.poll(wgpu::PollType::Poll);
             match receiver.try_recv() {
                 Ok(res) => break res,
                 Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {
-                    tokio::task::yield_now().await;
+                    spin_count += 1;
+                    if spin_count.is_multiple_of(10_000) {
+                        println!(
+                            "⚠️ [Debug] Polling loop has spun {} times. GPU callback is not firing.",
+                            spin_count
+                        );
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(1)).await;
                 }
                 Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
-                    panic!("FATAL: WebGPU aborted the pipeline! Check terminal for wgpu validation errors (e.g., out-of-bounds buffer copy, size mismatch).");
+                    panic!("FATAL: WebGPU aborted!");
                 }
             }
         };
@@ -317,6 +331,11 @@ impl Sampler {
     ) -> Result<u32> {
         // Read logits from GPU to CPU
         let mut logits = self.read_logits_from_gpu(engine, logits_buffer).await?;
+        println!("🔍 [Debug] Logits read back. Checking for NaNs...");
+        if logits.iter().any(|&x| x.is_nan()) {
+            panic!("FATAL MATH ERROR: GPU returned NaN logits. Shader dequantization (Q6_K mismatch) or RoPE base is corrupted.");
+        }
+        println!("✅ [Debug] Logits are valid. Entering sampler...");
 
         // Apply repetition penalty to prevent infinite loops
         self.apply_repetition_penalty(&mut logits, context);
@@ -375,6 +394,11 @@ impl Sampler {
 
         // Read all logits from GPU in a single transfer
         let all_logits = self.read_batched_logits_from_gpu(engine, logits_buffer, batch_size).await?;
+        println!("🔍 [Debug] Logits read back. Checking for NaNs...");
+        if all_logits.iter().any(|&x| x.is_nan()) {
+            panic!("FATAL MATH ERROR: GPU returned NaN logits. Shader dequantization (Q6_K mismatch) or RoPE base is corrupted.");
+        }
+        println!("✅ [Debug] Logits are valid. Entering sampler...");
 
         // Sample each sequence independently
         let mut sampled_tokens = Vec::with_capacity(batch_size as usize);
@@ -436,6 +460,7 @@ impl Sampler {
         queue.submit(Some(encoder.finish()));
 
         // Map the staging buffer for reading
+        println!("🔍 [Debug] About to map buffer. Ensuring queue is submitted...");
         let buffer_slice = staging_buffer.slice(..);
         let (sender, mut receiver) = tokio::sync::oneshot::channel();
         buffer_slice.map_async(wgpu::MapMode::Read, move |result| {
@@ -443,15 +468,23 @@ impl Sampler {
             let _ = sender.send(result);
         });
 
+        let mut spin_count: u64 = 0;
         let map_result = loop {
             let _ = device.poll(wgpu::PollType::Poll);
             match receiver.try_recv() {
                 Ok(res) => break res,
                 Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {
-                    tokio::task::yield_now().await;
+                    spin_count += 1;
+                    if spin_count.is_multiple_of(10_000) {
+                        println!(
+                            "⚠️ [Debug] Polling loop has spun {} times. GPU callback is not firing.",
+                            spin_count
+                        );
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(1)).await;
                 }
                 Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
-                    panic!("FATAL: WebGPU aborted the pipeline! Check terminal for wgpu validation errors (e.g., out-of-bounds buffer copy, size mismatch).");
+                    panic!("FATAL: WebGPU aborted!");
                 }
             }
         };
@@ -509,21 +542,30 @@ impl Sampler {
         queue.submit(Some(encoder.finish()));
 
         // Map the staging buffer for reading
+        println!("🔍 [Debug] About to map buffer. Ensuring queue is submitted...");
         let buffer_slice = staging_buffer.slice(..);
         let (sender, mut receiver) = tokio::sync::oneshot::channel();
         buffer_slice.map_async(wgpu::MapMode::Read, move |result| {
             let _ = sender.send(result);
         });
 
+        let mut spin_count: u64 = 0;
         let map_result = loop {
             let _ = device.poll(wgpu::PollType::Poll);
             match receiver.try_recv() {
                 Ok(res) => break res,
                 Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {
-                    tokio::task::yield_now().await;
+                    spin_count += 1;
+                    if spin_count.is_multiple_of(10_000) {
+                        println!(
+                            "⚠️ [Debug] Polling loop has spun {} times. GPU callback is not firing.",
+                            spin_count
+                        );
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(1)).await;
                 }
                 Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
-                    panic!("FATAL: WebGPU aborted the pipeline! Check terminal for wgpu validation errors (e.g., out-of-bounds buffer copy, size mismatch).");
+                    panic!("FATAL: WebGPU aborted!");
                 }
             }
         };
