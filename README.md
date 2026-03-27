@@ -21,7 +21,7 @@ Current workspace members in `Cargo.toml`:
 
 - `crates/janus-engine` - core inference engine, model formats, generation
 - `crates/janus-server` - HTTP server and OpenAI-compatible API
-- `crates/janus-mod-router` - routing module and deterministic routing primitives
+- `crates/janus-router` - deterministic routing primitives
 - `crates/janus-mod-*` - modular server plugins (instruct, routing, vision, tts, etc.)
 
 There are also legacy example plugin crates under `crates/plugins/` that are not part of the workspace.
@@ -96,7 +96,7 @@ For streaming, set `"stream": true`.
 
 ## Notes on Routing and Plugins
 
-- `janus-mod-router` provides deterministic local/cloud routing heuristics.
+- `janus-router` provides deterministic local/cloud routing heuristics used by serving layers.
 - Plugins are module-based and compose through `janus_engine::JanusPlugin` at app startup.
 - `janus-server` currently wires in multiple `janus-mod-*` plugins at startup (instruct, router,
   knowledge, lora, rp, tts, vecmem, vision, vismem, voice, imggen).

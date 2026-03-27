@@ -6,7 +6,7 @@ members = [
     "crates/janus-mod-instruct",
     "crates/janus-mod-knowledge",
     "crates/janus-mod-lora",
-    "crates/janus-mod-router",
+    "crates/janus-router",
     "crates/janus-mod-rp",
     "crates/janus-mod-tts",
     "crates/janus-mod-vecmem",
@@ -32,44 +32,17 @@ license = "LGPL-3.0-or-later"
 repository = "https://github.com/yourusername/janus-engine"
 
 [workspace.dependencies]
-# Compute backend - WGPU for cross-platform GPU compute
+# Common dependencies shared across crates
 wgpu = "29"
-bytemuck = { version = "1.25", features = ["derive"] }
-pollster = "0.4"
-
-# Core async runtime
 tokio = { version = "1.50", features = ["full"] }
 futures = "0.3.32"
-
-# Serialization
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
-
-# Bitflags for capability flags
-bitflags = "2.11"
-
-# Error handling
 anyhow = "1.0.102"
 thiserror = "2.0.18"
-
-# HTTP server
 axum = "0.8.8"
-tower = "0.5.3"
-tower-http = { version = "0.6.8", features = ["fs", "trace"] }
-
-# Logging and tracing
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
-
-# Binary parsing for GGUF
-memmap2 = "0.9.10"
-byteorder = "1.5.0"
-
-# Numerics
-half = "2.7.1"
-
-# Random number generation
-rand = "0.10"
 
 [profile.release]
 opt-level = 3

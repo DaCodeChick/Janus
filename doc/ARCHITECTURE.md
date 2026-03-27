@@ -24,8 +24,7 @@ through in-process modules implementing `JanusPlugin`.
 │  ├─ WebGPU compute backend (`wgpu`)                          │
 │  └─ App composition API (`JanusApp`, `JanusPlugin`)          │
 │                                                              │
-│  janus-mod-router                                             │
-│  ├─ RouterPlugin (module integration point)                  │
+│  janus-router                                                 │
 │  └─ DeterministicRouter / RouterConfig / routing types       │
 │                                                              │
 │  Other janus-mod-* crates                                     │
@@ -42,7 +41,7 @@ Primary crates:
 
 - `crates/janus-engine`: core compute, model, formats, and app composition abstractions
 - `crates/janus-server`: HTTP server and API routes
-- `crates/janus-mod-router`: routing logic and router module
+- `crates/janus-router`: routing logic and deterministic router primitives
 - `crates/janus-mod-*`: additional pluggable modules used by the server
 
 Legacy directories:
@@ -61,7 +60,7 @@ This replaces the previous external API-crate split and avoids an ABI boundary i
 
 ## Routing Architecture
 
-Routing primitives now live in `janus-mod-router`:
+Routing primitives now live in `janus-router`:
 
 - `DeterministicRouter`
 - `RouterConfig`

@@ -11,7 +11,6 @@ use janus_mod_imggen::ImgGenPlugin;
 use janus_mod_instruct::InstructPlugin;
 use janus_mod_knowledge::KnowledgePlugin;
 use janus_mod_lora::LoraPlugin;
-use janus_mod_router::RouterPlugin;
 use janus_mod_rp::RpPlugin;
 use janus_mod_tts::TtsPlugin;
 use janus_mod_vecmem::VecMemPlugin;
@@ -168,7 +167,6 @@ async fn main() -> Result<()> {
 
     let mut app = JanusApp::new();
     app.add_plugin(InstructPlugin)
-        .add_plugin(RouterPlugin)
         .add_plugin(KnowledgePlugin)
         .add_plugin(LoraPlugin)
         .add_plugin(RpPlugin)

@@ -92,19 +92,19 @@ impl RoutingRequest {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RouteDestination {
     /// Route to local GGUF inference engine
-    Local,
+    LocalEngine,
     /// Route to cloud API (e.g., OpenAI, Anthropic)
-    Cloud,
+    CloudAPI,
 }
 
 impl RouteDestination {
     /// Check if this is a local route
     pub const fn is_local(&self) -> bool {
-        matches!(self, RouteDestination::Local)
+        matches!(self, RouteDestination::LocalEngine)
     }
 
     /// Check if this is a cloud route
     pub const fn is_cloud(&self) -> bool {
-        matches!(self, RouteDestination::Cloud)
+        matches!(self, RouteDestination::CloudAPI)
     }
 }

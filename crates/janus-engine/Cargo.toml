@@ -10,8 +10,8 @@ workspace = true
 
 [dependencies]
 # GGUF parsing
-byteorder.workspace = true
-memmap2.workspace = true
+byteorder = "1.5.0"
+memmap2 = "0.9.10"
 
 # Serialization
 serde.workspace = true
@@ -20,8 +20,8 @@ serde_json.workspace = true
 # GPU compute
 wgpu.workspace = true
 axum.workspace = true
-bytemuck.workspace = true
-pollster.workspace = true
+bytemuck = { version = "1.25", features = ["derive"] }
+pollster = "0.4"
 
 # Async runtime
 tokio.workspace = true
@@ -33,13 +33,13 @@ anyhow.workspace = true
 
 # Logging
 tracing.workspace = true
-tracing-subscriber.workspace = true
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 
 # Numerics
-half.workspace = true
+half = "2.7.1"
 
 # Random number generation
-rand.workspace = true
+rand = "0.10"
 
 # Tokenization
 tokenizers = "0.20"

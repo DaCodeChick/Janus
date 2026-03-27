@@ -14,7 +14,7 @@ janus-mod-imggen = { path = "../janus-mod-imggen" }
 janus-mod-instruct = { path = "../janus-mod-instruct" }
 janus-mod-knowledge = { path = "../janus-mod-knowledge" }
 janus-mod-lora = { path = "../janus-mod-lora" }
-janus-mod-router = { path = "../janus-mod-router" }
+janus-router = { path = "../janus-router" }
 janus-mod-rp = { path = "../janus-mod-rp" }
 janus-mod-tts = { path = "../janus-mod-tts" }
 janus-mod-vecmem = { path = "../janus-mod-vecmem" }
@@ -25,8 +25,8 @@ clap = { version = "=4.5.55", features = ["derive"] }
 
 # Web server
 axum.workspace = true 
-tower.workspace = true
-tower-http.workspace = true
+tower = "0.5.3"
+tower-http = { version = "0.6.8", features = ["fs", "trace"] }
 
 # Async runtime
 tokio.workspace = true
@@ -39,7 +39,7 @@ serde_json.workspace = true
 
 # Logging
 tracing.workspace = true
-tracing-subscriber.workspace = true
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 
 # Error handling
 anyhow.workspace = true
