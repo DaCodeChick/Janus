@@ -55,7 +55,7 @@ impl Model {
                     tokio::task::yield_now().await;
                 }
                 Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
-                    return Err(crate::compute::ComputeError::BufferMappingFailed);
+                    panic!("FATAL: WebGPU dropped the buffer mapping callback! Check your terminal for wgpu validation errors (e.g., out-of-bounds buffer copy, size mismatch).");
                 }
             }
         };

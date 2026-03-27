@@ -272,7 +272,7 @@ impl Sampler {
                     tokio::task::yield_now().await;
                 }
                 Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
-                    return Err(crate::compute::ComputeError::BufferMappingFailed);
+                    panic!("FATAL: WebGPU dropped the buffer mapping callback! Check your terminal for wgpu validation errors (e.g., out-of-bounds buffer copy, size mismatch).");
                 }
             }
         };
@@ -420,10 +420,10 @@ impl Sampler {
         let queue = engine.queue();
 
         // Create staging buffer for reading back to CPU
-        let buffer_size = (self.vocab_size * std::mem::size_of::<f32>() as u32) as u64;
+        let staging_size = u64::from(self.vocab_size) * std::mem::size_of::<f32>() as u64;
         let staging_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("logits_staging_buffer"),
-            size: buffer_size,
+            size: staging_size,
             usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -432,7 +432,7 @@ impl Sampler {
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("logits_copy_encoder"),
         });
-        encoder.copy_buffer_to_buffer(logits_buffer, 0, &staging_buffer, 0, buffer_size);
+        encoder.copy_buffer_to_buffer(logits_buffer, 0, &staging_buffer, 0, staging_size);
         queue.submit(Some(encoder.finish()));
 
         // Map the staging buffer for reading
@@ -451,7 +451,7 @@ impl Sampler {
                     tokio::task::yield_now().await;
                 }
                 Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
-                    return Err(crate::compute::ComputeError::BufferMappingFailed);
+                    panic!("FATAL: WebGPU dropped the buffer mapping callback! Check your terminal for wgpu validation errors (e.g., out-of-bounds buffer copy, size mismatch).");
                 }
             }
         };
@@ -491,10 +491,12 @@ impl Sampler {
         let queue = engine.queue();
 
         // Create staging buffer for reading back to CPU
-        let buffer_size = (batch_size * self.vocab_size * std::mem::size_of::<f32>() as u32) as u64;
+        let staging_size = u64::from(batch_size)
+            * u64::from(self.vocab_size)
+            * std::mem::size_of::<f32>() as u64;
         let staging_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("batched_logits_staging_buffer"),
-            size: buffer_size,
+            size: staging_size,
             usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -503,7 +505,7 @@ impl Sampler {
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("batched_logits_copy_encoder"),
         });
-        encoder.copy_buffer_to_buffer(logits_buffer, 0, &staging_buffer, 0, buffer_size);
+        encoder.copy_buffer_to_buffer(logits_buffer, 0, &staging_buffer, 0, staging_size);
         queue.submit(Some(encoder.finish()));
 
         // Map the staging buffer for reading
@@ -521,7 +523,7 @@ impl Sampler {
                     tokio::task::yield_now().await;
                 }
                 Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
-                    return Err(crate::compute::ComputeError::BufferMappingFailed);
+                    panic!("FATAL: WebGPU dropped the buffer mapping callback! Check your terminal for wgpu validation errors (e.g., out-of-bounds buffer copy, size mismatch).");
                 }
             }
         };
