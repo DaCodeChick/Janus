@@ -1,0 +1,12 @@
+[package]
+name = "janus-mod-vision"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+janus-engine = { path = "../janus-engine" }

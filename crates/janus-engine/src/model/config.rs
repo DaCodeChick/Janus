@@ -8,7 +8,7 @@ use std::fs;
 use std::path::Path;
 use thiserror::Error;
 
-use crate::formats::{GGUFMetadata, MetadataValue};
+use crate::formats::{GgufMetadata, MetadataValue};
 
 /// Errors that can occur when loading model configuration
 #[derive(Error, Debug)]
@@ -289,7 +289,7 @@ impl From<&HuggingFaceConfig> for crate::model::ModelConfig {
     }
 }
 
-fn metadata_as_u32(metadata: &GGUFMetadata, key: &str) -> Result<u32> {
+fn metadata_as_u32(metadata: &GgufMetadata, key: &str) -> Result<u32> {
     let value = metadata
         .metadata
         .get(key)
@@ -319,7 +319,7 @@ fn metadata_as_u32(metadata: &GGUFMetadata, key: &str) -> Result<u32> {
     })
 }
 
-fn metadata_as_f32(metadata: &GGUFMetadata, key: &str) -> Result<f32> {
+fn metadata_as_f32(metadata: &GgufMetadata, key: &str) -> Result<f32> {
     let value = metadata
         .metadata
         .get(key)
@@ -345,14 +345,14 @@ fn metadata_as_f32(metadata: &GGUFMetadata, key: &str) -> Result<f32> {
     }
 }
 
-fn metadata_array_len_as_u32(metadata: &GGUFMetadata, key: &str) -> Option<u32> {
+fn metadata_array_len_as_u32(metadata: &GgufMetadata, key: &str) -> Option<u32> {
     match metadata.metadata.get(key) {
         Some(MetadataValue::Array(values)) => u32::try_from(values.len()).ok(),
         _ => None,
     }
 }
 
-fn metadata_string(metadata: &GGUFMetadata, key: &str) -> Option<String> {
+fn metadata_string(metadata: &GgufMetadata, key: &str) -> Option<String> {
     match metadata.metadata.get(key) {
         Some(MetadataValue::String(v)) => Some(v.clone()),
         _ => None,
@@ -361,7 +361,7 @@ fn metadata_string(metadata: &GGUFMetadata, key: &str) -> Option<String> {
 
 /// Build internal ModelConfig directly from GGUF metadata.
 pub fn model_config_from_gguf_metadata(
-    metadata: &GGUFMetadata,
+    metadata: &GgufMetadata,
     tokenizer_vocab_size: u32,
 ) -> Result<crate::model::ModelConfig> {
     let architecture =

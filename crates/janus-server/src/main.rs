@@ -3,13 +3,23 @@ use clap::{Parser, ValueEnum};
 use janus_engine::model::block::get_tensor;
 use janus_engine::model::config::model_config_from_gguf_metadata;
 use janus_engine::{
-    ChatFormatter, ChatTemplateFormat, ComputeEngine, GGUFLoader, HuggingFaceConfig, Model,
-    ModelConfig, SafetensorsLoader, Sampler, SamplerConfig, Tokenizer, TransformerBlock,
+    ChatFormatter, ChatTemplateFormat, ComputeEngine, GgufLoader, HuggingFaceConfig, JanusApp,
+    Model, ModelConfig, SafetensorsLoader, Sampler, SamplerConfig, Tokenizer, TransformerBlock,
     TransformerBlockConfig,
 };
+use janus_mod_imggen::ImgGenPlugin;
+use janus_mod_instruct::InstructPlugin;
+use janus_mod_knowledge::KnowledgePlugin;
+use janus_mod_lora::LoraPlugin;
+use janus_mod_router::RouterPlugin;
+use janus_mod_rp::RpPlugin;
+use janus_mod_tts::TtsPlugin;
+use janus_mod_vecmem::VecMemPlugin;
+use janus_mod_vision::VisionPlugin;
+use janus_mod_vismem::VisMemPlugin;
+use janus_mod_voice::VoicePlugin;
 use janus_server::{create_router, handlers::AppState};
 use std::collections::HashMap;
-use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -156,6 +166,19 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
     let args = Args::parse();
 
+    let mut app = JanusApp::new();
+    app.add_plugin(InstructPlugin)
+        .add_plugin(RouterPlugin)
+        .add_plugin(KnowledgePlugin)
+        .add_plugin(LoraPlugin)
+        .add_plugin(RpPlugin)
+        .add_plugin(TtsPlugin)
+        .add_plugin(VecMemPlugin)
+        .add_plugin(VisionPlugin)
+        .add_plugin(VisMemPlugin)
+        .add_plugin(VoicePlugin)
+        .add_plugin(ImgGenPlugin);
+
     let (model_path, model_dir) = resolve_model_paths(&args.model)?;
     let config_path = model_dir.join("config.json");
     let tokenizer_path = model_dir.join("tokenizer.json");
@@ -174,11 +197,12 @@ async fn main() -> Result<()> {
     }
 
     let engine = ComputeEngine::new().await.context("failed to initialize GPU")?;
+    app.set_gpu_context(&engine);
     let tokenizer =
         Tokenizer::from_file(&tokenizer_path).context("failed to load tokenizer.json")?;
 
     let (tensors, model_config) = if extension == "gguf" {
-        let loader = GGUFLoader::from_file(&model_path).context("failed to parse GGUF file")?;
+        let loader = GgufLoader::from_file(&model_path).context("failed to parse GGUF file")?;
         let model_config = model_config_from_gguf_metadata(
             loader.gguf_metadata(),
             tokenizer.vocab_size() as u32,
@@ -269,24 +293,23 @@ async fn main() -> Result<()> {
         ChatFormatter::from_model_name(detection_name)
     };
 
+    let shared_model = Arc::new(Mutex::new(model));
+    app.set_model(shared_model.clone());
+
     let state = Arc::new(AppState {
-        model: Arc::new(Mutex::new(model)),
+        model: shared_model,
         chat_formatter,
         model_name,
     });
 
-    let app = create_router(state);
-    let addr: SocketAddr = format!("{}:{}", args.host, args.port)
+    app.set_router(create_router(state));
+    let addr = format!("{}:{}", args.host, args.port)
         .parse()
         .with_context(|| format!("invalid bind address {}:{}", args.host, args.port))?;
+    app.set_bind_addr(addr);
 
     println!("Janus server listening on http://{}", addr);
-    let listener = tokio::net::TcpListener::bind(addr)
-        .await
-        .context("failed to bind TCP listener")?;
-    axum::serve(listener, app)
-        .await
-        .context("server exited with error")?;
+    app.run().await?;
 
     Ok(())
 }

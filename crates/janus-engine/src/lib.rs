@@ -18,13 +18,18 @@ pub mod compute;
 pub mod formats;
 pub mod loader;
 pub mod model;
+pub mod app;
 
 // Re-export commonly used types
 pub use compute::{Buffer, BufferUsage, ComputeBackend, ComputeEngine, DeviceInfo, KVCache};
+pub use app::{JanusApp, JanusPlugin};
 pub use formats::{
-    GGMLType, GGUFError, GGUFFile, GGUFMetadata, MetadataValue, SafetensorsFile, TensorInfo,
+    GGMLType, GgufError, GgufFile, GgufMetadata, MetadataValue, SafetensorsFile, TensorInfo,
     FormatError, ModelLoader, TensorData, TensorDType,
 };
+
+// Backward-compatible aliases
+pub use formats::{GGUFError, GGUFFile, GGUFMetadata};
 pub use model::{
     ChatFormatter, ChatMessage, ChatRole, ChatTemplateFormat,
     LMHead, LMHeadConfig, Model, ModelConfig, Sampler, SamplerConfig, Tokenizer,
@@ -33,5 +38,8 @@ pub use model::{
 };
 
 // Convenience aliases for model loaders
-pub use formats::GGUFFile as GGUFLoader;
+pub use formats::GgufFile as GgufLoader;
 pub use formats::SafetensorsFile as SafetensorsLoader;
+
+// Backward-compatible alias
+pub use formats::GGUFFile as GGUFLoader;

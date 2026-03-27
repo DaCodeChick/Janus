@@ -23,7 +23,7 @@ use std::env;
 use std::io::{self, Write};
 use std::path::PathBuf;
 use janus_engine::{
-    ComputeEngine, GGUFFile, SafetensorsFile, HuggingFaceConfig,
+    ComputeEngine, GgufFile, SafetensorsFile, HuggingFaceConfig,
     Model, ModelConfig, Tokenizer, Sampler, SamplerConfig, TransformerBlock, TransformerBlockConfig
 };
 use janus_engine::model::block::get_tensor;
@@ -181,7 +181,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Load model weights based on file extension
     let tensors = if model_path.extension().and_then(|s| s.to_str()) == Some("gguf") {
-        let loader = GGUFFile::from_file(&model_path)?;
+        let loader = GgufFile::from_file(&model_path)?;
         engine.allocate_tensors(&loader)?
     } else {
         let loader = SafetensorsFile::from_file(&model_path)?;

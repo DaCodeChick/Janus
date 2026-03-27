@@ -2,7 +2,7 @@ use thiserror::Error;
 
 /// GGUF parsing errors with helpful suggestions
 #[derive(Error, Debug)]
-pub enum GGUFError {
+pub enum GgufError {
     #[error("Invalid GGUF file: magic number check failed\nExpected: GGUF (0x47475546)\nGot: {0:?}\n\nSuggestions:\n  - Verify this is a valid GGUF file (not a Safetensors or PyTorch file)\n  - Check if the file was corrupted during download\n  - Try re-downloading the model")]
     InvalidMagic([u8; 4]),
 
@@ -40,4 +40,4 @@ pub enum GGUFError {
 }
 
 /// Result type for GGUF operations
-pub type Result<T> = std::result::Result<T, GGUFError>;
+pub type Result<T> = std::result::Result<T, GgufError>;

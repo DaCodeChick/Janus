@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use super::error::GGUFError;
+use super::error::GgufError;
 
 /// GGML tensor data types (quantization formats)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -38,7 +38,7 @@ pub enum GGMLType {
 }
 
 impl TryFrom<u32> for GGMLType {
-    type Error = GGUFError;
+    type Error = GgufError;
 
     fn try_from(value: u32) -> Result<Self, Self::Error> {
         match value {
@@ -70,7 +70,7 @@ impl TryFrom<u32> for GGMLType {
             27 => Ok(Self::IQ2_S),
             28 => Ok(Self::IQ4_XS),
             29 => Ok(Self::IQ1_M),
-            _ => Err(GGUFError::InvalidTensorType(value)),
+            _ => Err(GgufError::InvalidTensorType(value)),
         }
     }
 }
@@ -207,7 +207,7 @@ pub enum MetadataValueType {
 }
 
 impl TryFrom<u32> for MetadataValueType {
-    type Error = GGUFError;
+    type Error = GgufError;
 
     fn try_from(value: u32) -> Result<Self, Self::Error> {
         match value {
@@ -224,23 +224,23 @@ impl TryFrom<u32> for MetadataValueType {
             10 => Ok(Self::UInt64),
             11 => Ok(Self::Int64),
             12 => Ok(Self::Float64),
-            _ => Err(GGUFError::InvalidMetadataType(value)),
+            _ => Err(GgufError::InvalidMetadataType(value)),
         }
     }
 }
 
-/// GGUF file header
+/// Gguf file header
 #[derive(Debug, Clone)]
-pub struct GGUFHeader {
+pub struct GgufHeader {
     pub version: u32,
     pub tensor_count: u64,
     pub metadata_kv_count: u64,
 }
 
-/// Complete GGUF metadata
+/// Complete Gguf metadata
 #[derive(Debug, Clone)]
-pub struct GGUFMetadata {
-    pub header: GGUFHeader,
+pub struct GgufMetadata {
+    pub header: GgufHeader,
     pub metadata: HashMap<String, MetadataValue>,
     pub tensors: Vec<TensorInfo>,
     pub alignment: u64,

@@ -18,7 +18,7 @@ use std::collections::HashMap;
 use std::env;
 use std::path::PathBuf;
 use janus_engine::{
-    ComputeEngine, GGUFFile, SafetensorsFile, ModelLoader, HuggingFaceConfig,
+    ComputeEngine, GgufFile, SafetensorsFile, ModelLoader, HuggingFaceConfig,
     Model, ModelConfig, Tokenizer, Sampler, TransformerBlock, TransformerBlockConfig
 };
 use janus_engine::model::block::get_tensor;
@@ -187,7 +187,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     
     let (tensors, model_config) = match extension.as_str() {
         "gguf" => {
-            let loader = GGUFFile::from_file(&model_path)?;
+            let loader = GgufFile::from_file(&model_path)?;
             println!("   Format: GGUF");
             
             // Show model metadata

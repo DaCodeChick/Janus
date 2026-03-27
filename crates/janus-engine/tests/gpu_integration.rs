@@ -1,7 +1,7 @@
 //! Integration test for ComputeEngine and GGUF tensor allocation
 
 use janus_engine::compute::ComputeEngine;
-use janus_engine::formats::gguf::{GGMLType, GGUFFile};
+use janus_engine::formats::gguf::{GGMLType, GgufFile};
 use janus_engine::formats::ModelLoader;
 use std::fs::File;
 use std::io::Write;
@@ -75,7 +75,7 @@ async fn test_allocate_tensors_to_gpu() {
     let gguf_path = create_test_gguf_file(&temp_dir);
 
     // Parse the GGUF file
-    let gguf = GGUFFile::from_file(&gguf_path).expect("Failed to open GGUF file");
+    let gguf = GgufFile::from_file(&gguf_path).expect("Failed to open GGUF file");
 
     // Verify we have 2 tensors
     let tensors = gguf.tensors().expect("Failed to get tensors");
@@ -121,7 +121,7 @@ async fn test_tensor_data_reading() {
     let gguf_path = create_test_gguf_file(&temp_dir);
 
     // Parse the GGUF file
-    let gguf = GGUFFile::from_file(&gguf_path).expect("Failed to open GGUF file");
+    let gguf = GgufFile::from_file(&gguf_path).expect("Failed to open GGUF file");
 
     // Test reading tensor data
     let tensors = gguf.tensors().expect("Failed to get tensors");

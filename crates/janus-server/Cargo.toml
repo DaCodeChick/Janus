@@ -10,7 +10,18 @@ workspace = true
 
 [dependencies]
 janus-engine = { path = "../janus-engine" }
-clap = { version = "4.6", features = ["derive"] }
+janus-mod-imggen = { path = "../janus-mod-imggen" }
+janus-mod-instruct = { path = "../janus-mod-instruct" }
+janus-mod-knowledge = { path = "../janus-mod-knowledge" }
+janus-mod-lora = { path = "../janus-mod-lora" }
+janus-mod-router = { path = "../janus-mod-router" }
+janus-mod-rp = { path = "../janus-mod-rp" }
+janus-mod-tts = { path = "../janus-mod-tts" }
+janus-mod-vecmem = { path = "../janus-mod-vecmem" }
+janus-mod-vision = { path = "../janus-mod-vision" }
+janus-mod-vismem = { path = "../janus-mod-vismem" }
+janus-mod-voice = { path = "../janus-mod-voice" }
+clap = { version = "=4.5.55", features = ["derive"] }
 
 # Web server
 axum.workspace = true 

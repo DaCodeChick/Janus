@@ -7,35 +7,42 @@ mod error;
 mod parser;
 mod types;
 
-pub use error::{GGUFError, Result as GGUFResult};
-pub use parser::GGUFParser;
-pub use types::{GGMLType, GGUFHeader, GGUFMetadata, MetadataValue, MetadataValueType, TensorInfo};
+pub use error::{GgufError, Result as GgufResult};
+pub use parser::GgufParser;
+pub use types::{GGMLType, GgufHeader, GgufMetadata, MetadataValue, MetadataValueType, TensorInfo};
 
 use super::{FormatError, ModelLoader, Result, TensorDType, TensorData};
 use std::collections::HashMap;
 use std::path::Path;
 
-/// GGUF file loader implementing ModelLoader trait
-pub struct GGUFFile {
-    parser: GGUFParser,
+/// Gguf file loader implementing ModelLoader trait
+pub struct GgufFile {
+    parser: GgufParser,
 }
 
-impl GGUFFile {
+pub type GGUFFile = GgufFile;
+pub type GGUFParser = GgufParser;
+pub type GGUFError = GgufError;
+pub type GGUFResult<T> = GgufResult<T>;
+pub type GGUFHeader = GgufHeader;
+pub type GGUFMetadata = GgufMetadata;
+
+impl GgufFile {
     /// Load a GGUF file from disk using memory mapping
     pub fn from_file<P: AsRef<Path>>(path: P) -> Result<Self> {
-        let parser = GGUFParser::open(path)
+        let parser = GgufParser::open(path)
             .map_err(|e| FormatError::ParseError(format!("GGUF parse error: {}", e)))?;
 
         Ok(Self { parser })
     }
 
     /// Get direct access to the underlying GGUF parser
-    pub fn parser(&self) -> &GGUFParser {
+    pub fn parser(&self) -> &GgufParser {
         &self.parser
     }
 
     /// Get GGUF-specific metadata
-    pub fn gguf_metadata(&self) -> &GGUFMetadata {
+    pub fn gguf_metadata(&self) -> &GgufMetadata {
         self.parser.metadata()
     }
 
@@ -88,7 +95,7 @@ impl GGUFFile {
     }
 }
 
-impl ModelLoader for GGUFFile {
+impl ModelLoader for GgufFile {
     fn tensors(&self) -> Result<HashMap<String, TensorData<'_>>> {
         let mut result = HashMap::new();
 
@@ -129,8 +136,8 @@ mod tests {
 
     #[test]
     fn test_ggml_dtype_conversion() {
-        assert_eq!(GGUFFile::ggml_to_dtype(GGMLType::F32), TensorDType::F32);
-        assert_eq!(GGUFFile::ggml_to_dtype(GGMLType::F16), TensorDType::F16);
-        assert_eq!(GGUFFile::ggml_to_dtype(GGMLType::Q4_0), TensorDType::Q4_0);
+        assert_eq!(GgufFile::ggml_to_dtype(GGMLType::F32), TensorDType::F32);
+        assert_eq!(GgufFile::ggml_to_dtype(GGMLType::F16), TensorDType::F16);
+        assert_eq!(GgufFile::ggml_to_dtype(GGMLType::Q4_0), TensorDType::Q4_0);
     }
 }

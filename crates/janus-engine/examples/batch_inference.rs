@@ -17,7 +17,7 @@ use std::collections::HashMap;
 use std::env;
 use std::path::PathBuf;
 use janus_engine::{
-    ComputeEngine, GGUFLoader, SafetensorsLoader, HuggingFaceConfig,
+    ComputeEngine, GgufLoader, SafetensorsLoader, HuggingFaceConfig,
     Model, ModelConfig, Tokenizer, Sampler, SamplerConfig, TransformerBlock, TransformerBlockConfig
 };
 use janus_engine::model::block::get_tensor;
@@ -211,7 +211,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     
     let tensors = match extension {
         "gguf" => {
-            let loader = GGUFLoader::from_file(&model_file)?;
+            let loader = GgufLoader::from_file(&model_file)?;
             println!("   Format: GGUF");
             println!("   Allocating tensors to GPU VRAM...");
             engine.allocate_tensors(&loader)?

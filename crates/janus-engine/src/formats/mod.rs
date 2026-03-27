@@ -79,8 +79,11 @@
 pub mod gguf;
 pub mod safetensors;
 
-// Re-export GGUF types for convenience
-pub use gguf::{GGMLType, GGUFError, GGUFFile, GGUFMetadata, MetadataValue, TensorInfo};
+// Re-export Gguf types for convenience
+pub use gguf::{GGMLType, GgufError, GgufFile, GgufMetadata, MetadataValue, TensorInfo};
+
+// Backward-compatible aliases
+pub use gguf::{GGUFError, GGUFFile, GGUFMetadata};
 
 // Re-export Safetensors types
 pub use safetensors::SafetensorsFile;
