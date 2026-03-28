@@ -188,14 +188,14 @@ impl ComputeEngine {
         Self::pack_f16_to_u32(&f16_vec)
     }
 
-    /// Convert Q6_K blocks to packed FP16 format.
+    /// Convert Q6_K blocks to F32 values.
     ///
     /// Q6_K block layout (210 bytes for 256 values):
     /// - ql[128]: low 4 bits for each value (two values per byte)
     /// - qh[64]: high 2 bits for each value (four values per byte)
     /// - scales[16]: signed int8 scales per 16-value group
     /// - d[2]: f16 super-scale
-    fn q6_k_to_packed_f16(q6k_data: &[u8], num_elements: usize) -> Result<Vec<u32>> {
+    fn q6_k_to_f32(q6k_data: &[u8], num_elements: usize) -> Result<Vec<f32>> {
         const Q6K_BLOCK_SIZE: usize = 256;
         const Q6K_BLOCK_BYTES: usize = 210;
 
@@ -236,7 +236,7 @@ impl ComputeEngine {
                 let s = scales[i / 16] as i8 as f32;
 
                 let value = d * s * q_signed as f32;
-                dequantized.push(f16::from_f32(value));
+                dequantized.push(value);
             }
         }
 
@@ -244,7 +244,7 @@ impl ComputeEngine {
             dequantized.truncate(num_elements);
         }
 
-        Ok(Self::pack_f16_to_u32(&dequantized))
+        Ok(dequantized)
     }
 
     fn is_embedding_tensor_name(name: &str) -> bool {
@@ -622,197 +622,27 @@ impl ComputeEngine {
                             name,
                             GpuTensor {
                                 buffer,
-                                ggml_type: TensorDType::Q4_K,
+                                ggml_type: TensorDType::F16,
                             },
                         );
                     }
                 }
 
                 TensorDType::Q4_K => {
-                    if Self::is_embedding_tensor_name(&name) {
-                        let num_elements: usize = tensor.shape.iter().product();
-                        let packed_data = Self::q4_k_to_packed_f16(tensor.data, num_elements)?;
-                        let packed_bytes = bytemuck::cast_slice(&packed_data);
-                        let buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                            label: Some(&format!("tensor_{}_q4k_to_packed_f16", name)),
-                            contents: packed_bytes,
-                            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-                        });
-
-                        total_bytes += packed_bytes.len() as u64;
-                        q4k_count += 1;
-
-                        tracing::debug!(
-                            "Allocated tensor '{}': {} bytes (Q4_K -> packed FP16 for embedding lookup)",
-                            name,
-                            packed_bytes.len()
-                        );
-
-                        tensor_buffers.insert(
-                            name,
-                            GpuTensor {
-                                buffer,
-                                ggml_type: TensorDType::Q4_K,
-                            },
-                        );
-                    } else {
-                        // Q4_K: Keep quantized format, dequantize on-the-fly in shader
-                        let size_bytes = tensor.data.len();
-
-                        let buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                            label: Some(&format!("tensor_{}_q4k", name)),
-                            contents: tensor.data,
-                            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-                        });
-
-                        total_bytes += size_bytes as u64;
-                        q4k_count += 1;
-
-                        tracing::debug!(
-                            "Allocated tensor '{}': {} bytes (Q4_K quantized, on-the-fly dequantization)",
-                            name,
-                            size_bytes
-                        );
-
-                        tensor_buffers.insert(
-                            name,
-                            GpuTensor {
-                                buffer,
-                                ggml_type: TensorDType::Q5_K,
-                            },
-                        );
-                    }
-                }
-
-                TensorDType::Q5_K => {
-                    if Self::is_embedding_tensor_name(&name) {
-                        let num_elements: usize = tensor.shape.iter().product();
-                        let packed_data = Self::q5_k_to_packed_f16(tensor.data, num_elements)?;
-                        let packed_bytes = bytemuck::cast_slice(&packed_data);
-                        let buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                            label: Some(&format!("tensor_{}_q5k_to_packed_f16", name)),
-                            contents: packed_bytes,
-                            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-                        });
-
-                        total_bytes += packed_bytes.len() as u64;
-                        q5k_count += 1;
-
-                        tracing::debug!(
-                            "Allocated tensor '{}': {} bytes (Q5_K -> packed FP16 for embedding lookup)",
-                            name,
-                            packed_bytes.len()
-                        );
-
-                        tensor_buffers.insert(
-                            name,
-                            GpuTensor {
-                                buffer,
-                                ggml_type: TensorDType::Q5_K,
-                            },
-                        );
-                    } else {
-                        // Q5_K: Keep quantized format, dequantize on-the-fly in shader
-                        let size_bytes = tensor.data.len();
-
-                        let buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                            label: Some(&format!("tensor_{}_q5k", name)),
-                            contents: tensor.data,
-                            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-                        });
-
-                        total_bytes += size_bytes as u64;
-                        q5k_count += 1;
-
-                        tracing::debug!(
-                            "Allocated tensor '{}': {} bytes (Q5_K quantized, on-the-fly dequantization)",
-                            name,
-                            size_bytes
-                        );
-
-                        tensor_buffers.insert(
-                            name,
-                            GpuTensor {
-                                buffer,
-                                ggml_type: TensorDType::Q8_0,
-                            },
-                        );
-                    }
-                }
-
-                TensorDType::Q8_0 => {
-                    if Self::is_embedding_tensor_name(&name) {
-                        let num_elements: usize = tensor.shape.iter().product();
-                        let packed_data = Self::q8_0_to_packed_f16(tensor.data, num_elements)?;
-                        let packed_bytes = bytemuck::cast_slice(&packed_data);
-                        let buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                            label: Some(&format!("tensor_{}_q8_0_to_packed_f16", name)),
-                            contents: packed_bytes,
-                            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-                        });
-
-                        total_bytes += packed_bytes.len() as u64;
-                        q8_0_count += 1;
-
-                        tracing::debug!(
-                            "Allocated tensor '{}': {} bytes (Q8_0 -> packed FP16 for embedding lookup)",
-                            name,
-                            packed_bytes.len()
-                        );
-
-                        tensor_buffers.insert(
-                            name,
-                            GpuTensor {
-                                buffer,
-                                ggml_type: TensorDType::Q8_0,
-                            },
-                        );
-                    } else {
-                        // Q8_0: Keep quantized format, dequantize on-the-fly in shader
-                        let size_bytes = tensor.data.len();
-
-                        let buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                            label: Some(&format!("tensor_{}_q8_0", name)),
-                            contents: tensor.data,
-                            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-                        });
-
-                        total_bytes += size_bytes as u64;
-                        q8_0_count += 1;
-
-                        tracing::debug!(
-                            "Allocated tensor '{}': {} bytes (Q8_0 quantized, on-the-fly dequantization)",
-                            name,
-                            size_bytes
-                        );
-
-                        tensor_buffers.insert(
-                            name,
-                            GpuTensor {
-                                buffer,
-                                ggml_type: TensorDType::Q8_0,
-                            },
-                        );
-                    }
-                }
-
-                TensorDType::Q6_K => {
-                    // Convert Q6_K to packed FP16 so it can run through standard GEMM path.
                     let num_elements: usize = tensor.shape.iter().product();
-                    let packed_data = Self::q6_k_to_packed_f16(tensor.data, num_elements)?;
+                    let packed_data = Self::q4_k_to_packed_f16(tensor.data, num_elements)?;
                     let packed_bytes = bytemuck::cast_slice(&packed_data);
-
                     let buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                        label: Some(&format!("tensor_{}_q6k_to_packed_f16", name)),
+                        label: Some(&format!("tensor_{}_q4k_to_packed_f16", name)),
                         contents: packed_bytes,
                         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
                     });
 
                     total_bytes += packed_bytes.len() as u64;
-                    q6k_count += 1;
+                    q4k_count += 1;
 
                     tracing::debug!(
-                        "Allocated tensor '{}': {} bytes (Q6_K -> packed FP16, {} elements)",
+                        "Allocated tensor '{}': {} bytes (Q4_K -> packed FP16 fallback, {} elements)",
                         name,
                         packed_bytes.len(),
                         num_elements
@@ -823,6 +653,95 @@ impl ComputeEngine {
                         GpuTensor {
                             buffer,
                             ggml_type: TensorDType::F16,
+                        },
+                    );
+                }
+
+                TensorDType::Q5_K => {
+                    let num_elements: usize = tensor.shape.iter().product();
+                    let packed_data = Self::q5_k_to_packed_f16(tensor.data, num_elements)?;
+                    let packed_bytes = bytemuck::cast_slice(&packed_data);
+                    let buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                        label: Some(&format!("tensor_{}_q5k_to_packed_f16", name)),
+                        contents: packed_bytes,
+                        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                    });
+
+                    total_bytes += packed_bytes.len() as u64;
+                    q5k_count += 1;
+
+                    tracing::debug!(
+                        "Allocated tensor '{}': {} bytes (Q5_K -> packed FP16 fallback, {} elements)",
+                        name,
+                        packed_bytes.len(),
+                        num_elements
+                    );
+
+                    tensor_buffers.insert(
+                        name,
+                        GpuTensor {
+                            buffer,
+                            ggml_type: TensorDType::F16,
+                        },
+                    );
+                }
+
+                TensorDType::Q8_0 => {
+                    let num_elements: usize = tensor.shape.iter().product();
+                    let packed_data = Self::q8_0_to_packed_f16(tensor.data, num_elements)?;
+                    let packed_bytes = bytemuck::cast_slice(&packed_data);
+                    let buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                        label: Some(&format!("tensor_{}_q8_0_to_packed_f16", name)),
+                        contents: packed_bytes,
+                        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                    });
+
+                    total_bytes += packed_bytes.len() as u64;
+                    q8_0_count += 1;
+
+                    tracing::debug!(
+                        "Allocated tensor '{}': {} bytes (Q8_0 -> packed FP16 fallback, {} elements)",
+                        name,
+                        packed_bytes.len(),
+                        num_elements
+                    );
+
+                    tensor_buffers.insert(
+                        name,
+                        GpuTensor {
+                            buffer,
+                            ggml_type: TensorDType::F16,
+                        },
+                    );
+                }
+
+                TensorDType::Q6_K => {
+                    println!("⚙️ [Loader] Auto-detect: Q6_K tensor found. Dequantizing to F32 fallback on CPU...");
+                    let num_elements: usize = tensor.shape.iter().product();
+                    let f32_data = Self::q6_k_to_f32(tensor.data, num_elements)?;
+                    let f32_bytes = bytemuck::cast_slice(&f32_data);
+
+                    let buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                        label: Some(&format!("tensor_{}_q6k_to_f32", name)),
+                        contents: f32_bytes,
+                        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                    });
+
+                    total_bytes += f32_bytes.len() as u64;
+                    q6k_count += 1;
+
+                    tracing::debug!(
+                        "Allocated tensor '{}': {} bytes (Q6_K -> F32 fallback, {} elements)",
+                        name,
+                        f32_bytes.len(),
+                        num_elements
+                    );
+
+                    tensor_buffers.insert(
+                        name,
+                        GpuTensor {
+                            buffer,
+                            ggml_type: TensorDType::F32,
                         },
                     );
                 }
@@ -838,7 +757,7 @@ impl ComputeEngine {
 
         let total_mb = total_bytes as f64 / (1024.0 * 1024.0);
         tracing::info!(
-            "Successfully allocated {} tensors ({:.2} MB) to GPU VRAM: {} F32->FP16, {} F16->FP16, {} BF16->FP16, {} Q4_K, {} Q5_K, {} Q6_K->FP16, {} Q8_0, {} skipped",
+            "Successfully allocated {} tensors ({:.2} MB) to GPU VRAM: {} F32->FP16, {} F16->FP16, {} BF16->FP16, {} Q4_K->FP16, {} Q5_K->FP16, {} Q6_K->F32, {} Q8_0->FP16, {} skipped",
             tensor_buffers.len(),
             total_mb,
             f32_packed_count,
