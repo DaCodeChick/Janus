@@ -15,6 +15,25 @@
 // Tile size for shared memory blocking
 const TILE_SIZE: u32 = 16u;
 
+fn f16_to_f32_safe(h: u32) -> f32 {
+    let s = (h & 0x8000u) << 16u;
+    let e = (h & 0x7C00u) >> 10u;
+    let m = h & 0x03FFu;
+
+    if (e == 0u) {
+        return bitcast<f32>(s);
+    }
+    if (e == 31u) {
+        return bitcast<f32>(s | 0x7F800000u | (m << 13u));
+    }
+    let exp = e + 112u;
+    return bitcast<f32>(s | (exp << 23u) | (m << 13u));
+}
+
+fn manual_unpack(val: u32) -> vec2<f32> {
+    return vec2<f32>(f16_to_f32_safe(val & 0xFFFFu), f16_to_f32_safe(val >> 16u));
+}
+
 struct GemmUniforms {
     batch_size: u32, // Batch size
     M: u32,          // Rows of A (per batch item)
@@ -91,8 +110,7 @@ fn main(
             // Read packed u32 (contains 2 f16 values)
             let packed = matrix_b[global_idx / 2u];
             
-            // Unpack using WebGPU builtin: returns vec2<f32> with converted values
-            let unpacked = unpack2x16float(packed);
+            let unpacked = manual_unpack(packed);
             
             // Select the correct f16 value (low 16 bits = even index, high 16 bits = odd index)
             let is_odd = (global_idx % 2u) != 0u;
