@@ -32,7 +32,7 @@ pub use activation::{rmsnorm, silu};
 pub use argmax::argmax;
 pub use attention::compute_attention;
 pub use elementwise::{add_tensors, elementwise_mul};
-pub use matmul::{gemm, matmul};
+pub use matmul::{gemm, gemm_f32, matmul};
 pub use quantized::{
     gemm_auto,
     gemm_q4_k, gemm_q5_k, gemm_q8_0,

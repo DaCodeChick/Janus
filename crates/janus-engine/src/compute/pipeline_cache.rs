@@ -15,6 +15,7 @@ pub struct PipelineCache {
     pub embed_shader: wgpu::ShaderModule,
     pub rmsnorm_shader: wgpu::ShaderModule,
     pub gemm_shader: wgpu::ShaderModule,
+    pub gemm_f32_shader: wgpu::ShaderModule,
     pub silu_shader: wgpu::ShaderModule,
     pub add_tensors_shader: wgpu::ShaderModule,
     pub elementwise_mul_shader: wgpu::ShaderModule,
@@ -49,6 +50,7 @@ pub struct PipelineCache {
     pub rmsnorm_pipeline: wgpu::ComputePipeline,
     pub silu_pipeline: wgpu::ComputePipeline,
     pub gemm_pipeline: wgpu::ComputePipeline,
+    pub gemm_f32_pipeline: wgpu::ComputePipeline,
     pub matmul_pipeline: wgpu::ComputePipeline,
     pub add_tensors_pipeline: wgpu::ComputePipeline,
     pub elementwise_mul_pipeline: wgpu::ComputePipeline,
@@ -90,6 +92,11 @@ impl PipelineCache {
         let gemm_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("gemm_shader_cached"),
             source: wgpu::ShaderSource::Wgsl(include_str!("shaders/gemm.wgsl").into()),
+        });
+
+        let gemm_f32_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("gemm_f32_shader_cached"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/gemm_f32.wgsl").into()),
         });
 
         let silu_shader = rmsnorm_shader.clone();
@@ -154,7 +161,7 @@ impl PipelineCache {
             source: wgpu::ShaderSource::Wgsl(include_str!("shaders/argmax.wgsl").into()),
         });
 
-        println!("   ✅ {} shader modules compiled", 15);
+        println!("   ✅ {} shader modules compiled", 16);
 
         // ============================================
         // STEP 2: Create all bind group layouts
@@ -217,6 +224,14 @@ impl PipelineCache {
 
         let gemm_pipeline =
             Self::create_pipeline(device, "gemm_pipeline", &gemm_layout, &gemm_shader, "main");
+
+        let gemm_f32_pipeline = Self::create_pipeline(
+            device,
+            "gemm_f32_pipeline",
+            &gemm_layout,
+            &gemm_f32_shader,
+            "main",
+        );
 
         let matmul_pipeline = Self::create_pipeline(
             device,
@@ -301,13 +316,14 @@ impl PipelineCache {
             "main",
         );
 
-        println!("   ✅ {} compute pipelines created", 14);
+        println!("   ✅ {} compute pipelines created", 15);
         println!("✅ Pipeline cache ready!");
 
         Self {
             embed_shader,
             rmsnorm_shader,
             gemm_shader,
+            gemm_f32_shader,
             silu_shader,
             add_tensors_shader,
             elementwise_mul_shader,
@@ -338,6 +354,7 @@ impl PipelineCache {
             rmsnorm_pipeline,
             silu_pipeline,
             gemm_pipeline,
+            gemm_f32_pipeline,
             matmul_pipeline,
             add_tensors_pipeline,
             elementwise_mul_pipeline,

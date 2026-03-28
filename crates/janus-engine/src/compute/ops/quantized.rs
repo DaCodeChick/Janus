@@ -86,7 +86,19 @@ pub fn gemm_auto(
                 n,
             )
         }
-        TensorDType::F16 | TensorDType::F32 | TensorDType::BF16 => crate::compute::ops::matmul::gemm(
+        TensorDType::F16 | TensorDType::BF16 => crate::compute::ops::matmul::gemm(
+            engine,
+            encoder,
+            pipeline_cache,
+            matrix_a,
+            &matrix_b.buffer,
+            output,
+            batch_size,
+            m,
+            k,
+            n,
+        ),
+        TensorDType::F32 => crate::compute::ops::matmul::gemm_f32(
             engine,
             encoder,
             pipeline_cache,

@@ -296,3 +296,68 @@ pub fn gemm(
 
     Ok(())
 }
+
+pub fn gemm_f32(
+    engine: &ComputeEngine,
+    encoder: &mut wgpu::CommandEncoder,
+    pipeline_cache: &PipelineCache,
+    matrix_a: &wgpu::Buffer,
+    matrix_b: &wgpu::Buffer,
+    output: &wgpu::Buffer,
+    batch_size: u32,
+    m: u32,
+    k: u32,
+    n: u32,
+) -> Result<()> {
+    let device = engine.device();
+
+    let uniforms = GemmUniforms {
+        batch_size,
+        m,
+        k,
+        n,
+        _pad: [0; 12],
+    };
+    let uniforms_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("gemm_f32_uniforms"),
+        contents: bytemuck::cast_slice(&[uniforms]),
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+    });
+
+    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("gemm_f32_bind_group"),
+        layout: &pipeline_cache.gemm_layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: matrix_a.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: matrix_b.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: output.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 3,
+                resource: uniforms_buffer.as_entire_binding(),
+            },
+        ],
+    });
+
+    let workgroup_count_x = (n + 15) / 16;
+    let workgroup_count_y = (m + 15) / 16;
+
+    let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+        label: Some("gemm_f32_pass"),
+        timestamp_writes: None,
+    });
+
+    compute_pass.set_pipeline(&pipeline_cache.gemm_f32_pipeline);
+    compute_pass.set_bind_group(0, &bind_group, &[]);
+    compute_pass.dispatch_workgroups(workgroup_count_x, workgroup_count_y, batch_size);
+
+    Ok(())
+}
