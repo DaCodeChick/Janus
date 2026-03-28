@@ -11,7 +11,7 @@ use wgpu::util::DeviceExt;
 
 /// Uniforms structure for SiLU activation
 /// Must match the layout in activations.wgsl
-#[repr(C)]
+#[repr(C, align(16))]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 struct SiluUniforms {
     size: u32,
@@ -22,7 +22,7 @@ struct SiluUniforms {
 
 /// Uniforms structure for RMSNorm
 /// Must match the layout in activations.wgsl
-#[repr(C)]
+#[repr(C, align(16))]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 struct RmsNormUniforms {
     batch_size: u32,
@@ -30,6 +30,9 @@ struct RmsNormUniforms {
     epsilon: f32,
     _pad: u32,
 }
+
+const _: [(); 16] = [(); std::mem::size_of::<SiluUniforms>()];
+const _: [(); 16] = [(); std::mem::size_of::<RmsNormUniforms>()];
 
 /// Apply Root Mean Square Normalization (RMSNorm) with learned gamma weights
 ///

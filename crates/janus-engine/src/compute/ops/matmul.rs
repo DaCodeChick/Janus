@@ -11,7 +11,7 @@ use wgpu::util::DeviceExt;
 
 /// Uniforms structure for matrix-vector multiplication
 /// Must match the layout in matmul.wgsl
-#[repr(C)]
+#[repr(C, align(16))]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 struct MatVecUniforms {
     rows: u32,
@@ -195,7 +195,7 @@ pub async fn matmul(
 
 /// Uniforms structure for GEMM (General Matrix-Matrix Multiplication)
 /// Must match the layout in gemm.wgsl
-#[repr(C)]
+#[repr(C, align(16))]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 struct GemmUniforms {
     batch_size: u32,
@@ -204,6 +204,9 @@ struct GemmUniforms {
     n: u32,
     _pad: [u32; 12], // Padding to 64 bytes (WGSL uniform alignment requirement)
 }
+
+const _: [(); 16] = [(); std::mem::size_of::<MatVecUniforms>()];
+const _: [(); 64] = [(); std::mem::size_of::<GemmUniforms>()];
 
 /// Perform matrix-matrix multiplication (GEMM): C = A * B
 ///

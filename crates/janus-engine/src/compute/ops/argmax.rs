@@ -11,7 +11,7 @@ use wgpu::util::DeviceExt;
 
 /// Uniforms structure for argmax operation
 /// Must match the layout in argmax.wgsl
-#[repr(C)]
+#[repr(C, align(16))]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 struct ArgmaxUniforms {
     vocab_size: u32,
@@ -19,6 +19,8 @@ struct ArgmaxUniforms {
     _pad0: u32,
     _pad1: u32,
 }
+
+const _: [(); 16] = [(); std::mem::size_of::<ArgmaxUniforms>()];
 
 /// Find the index of the maximum value in logits (argmax) on GPU
 ///

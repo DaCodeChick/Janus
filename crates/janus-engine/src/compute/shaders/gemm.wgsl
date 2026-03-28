@@ -59,7 +59,7 @@ fn main(
     // Iterate over tiles along the K dimension
     let num_tiles = (uniforms.K + TILE_SIZE - 1u) / TILE_SIZE;
     
-    for (var tile_idx = 0u; tile_idx < num_tiles; tile_idx = tile_idx + 1u) {
+    for (var tile_idx = 0u; tile_idx < num_tiles && tile_idx < 10000u; tile_idx = tile_idx + 1u) {
         // Calculate the starting K index for this tile
         let k_start = tile_idx * TILE_SIZE;
         

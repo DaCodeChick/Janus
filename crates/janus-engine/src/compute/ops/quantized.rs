@@ -12,7 +12,7 @@ use wgpu::util::DeviceExt;
 
 /// Uniforms structure for Q4_K matrix-vector multiplication
 /// Must match the layout in gemm_q4_k.wgsl
-#[repr(C)]
+#[repr(C, align(16))]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 struct Q4KUniforms {
     m: u32,          // Number of rows in matrix A
@@ -20,6 +20,8 @@ struct Q4KUniforms {
     num_blocks: u32, // K / 256
     _pad: u32,
 }
+
+const _: [(); 16] = [(); std::mem::size_of::<Q4KUniforms>()];
 
 /// Q4_K block size in elements (weights)
 pub const Q4K_BLOCK_SIZE: usize = 256;
@@ -163,7 +165,7 @@ pub async fn gemm_q4_k(
 
 /// Uniforms structure for Q5_K matrix-vector multiplication
 /// Must match the layout in gemm_q5_k.wgsl
-#[repr(C)]
+#[repr(C, align(16))]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 struct Q5KUniforms {
     m: u32,          // Number of rows in matrix A
@@ -171,6 +173,8 @@ struct Q5KUniforms {
     num_blocks: u32, // K / 256
     _pad: u32,
 }
+
+const _: [(); 16] = [(); std::mem::size_of::<Q5KUniforms>()];
 
 /// Perform matrix-vector multiplication with Q5_K quantized matrix: y = M * x
 ///
@@ -280,7 +284,7 @@ pub async fn gemm_q5_k(
 
 /// Uniforms structure for Q8_0 matrix-vector multiplication
 /// Must match the layout in gemm_q8_0.wgsl
-#[repr(C)]
+#[repr(C, align(16))]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 struct Q8_0Uniforms {
     m: u32,          // Number of rows in matrix A
@@ -288,6 +292,8 @@ struct Q8_0Uniforms {
     num_blocks: u32, // K / 32
     _pad: u32,
 }
+
+const _: [(); 16] = [(); std::mem::size_of::<Q8_0Uniforms>()];
 
 /// Perform matrix-vector multiplication with Q8_0 quantized matrix: y = M * x
 ///

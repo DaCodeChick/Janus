@@ -13,7 +13,7 @@ use wgpu::util::DeviceExt;
 
 /// Uniforms structure for Attention operations
 /// Must match the layout in attention.wgsl
-#[repr(C)]
+#[repr(C, align(16))]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 struct AttentionUniforms {
     batch_size: u32,
@@ -30,7 +30,7 @@ struct AttentionUniforms {
 
 /// Uniforms structure for Softmax operation
 /// Must match the layout in softmax.wgsl
-#[repr(C)]
+#[repr(C, align(16))]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 struct SoftmaxUniforms {
     seq_len: u32,
@@ -38,6 +38,9 @@ struct SoftmaxUniforms {
     batch_size: u32,
     max_seq_len: u32,
 }
+
+const _: [(); 64] = [(); std::mem::size_of::<AttentionUniforms>()];
+const _: [(); 16] = [(); std::mem::size_of::<SoftmaxUniforms>()];
 
 /// Compute scaled dot-product attention with Grouped Query Attention (GQA) support - Batched
 ///

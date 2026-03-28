@@ -11,7 +11,7 @@ use wgpu::util::DeviceExt;
 
 /// Uniforms structure for RoPE (Rotary Positional Embeddings)
 /// Must match the layout in rope.wgsl
-#[repr(C)]
+#[repr(C, align(16))]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 struct RopeUniforms {
     batch_size: u32,
@@ -19,6 +19,8 @@ struct RopeUniforms {
     head_dim: u32,
     position: u32,
 }
+
+const _: [(); 16] = [(); std::mem::size_of::<RopeUniforms>()];
 
 /// Apply Rotary Positional Embeddings (RoPE)
 ///

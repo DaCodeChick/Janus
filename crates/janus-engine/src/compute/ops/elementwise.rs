@@ -10,7 +10,7 @@ use crate::compute::pipeline_cache::PipelineCache;
 use wgpu::util::DeviceExt;
 
 /// Uniforms structure for element-wise operations
-#[repr(C)]
+#[repr(C, align(16))]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 struct ElementwiseUniforms {
     size: u32,
@@ -18,6 +18,8 @@ struct ElementwiseUniforms {
     _pad1: u32,
     _pad2: u32,
 }
+
+const _: [(); 16] = [(); std::mem::size_of::<ElementwiseUniforms>()];
 
 /// Add two tensors element-wise: output = a + b
 ///

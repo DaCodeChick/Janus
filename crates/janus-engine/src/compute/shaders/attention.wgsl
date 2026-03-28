@@ -98,7 +98,7 @@ fn compute_qk_scores(
     // Compute dot product between query[batch_idx][head_idx] and key[batch_idx][layer][key_pos][kv_head_idx]
     var dot_product: f32 = 0.0;
     
-    for (var d = 0u; d < head_dim; d++) {
+    for (var d = 0u; d < head_dim && d < 10000u; d++) {
         // Query index: [batch_idx][head_idx][d]
         let q_idx = batch_idx * params.num_heads * head_dim + head_idx * head_dim + d;
         
@@ -169,7 +169,7 @@ fn apply_attention(
     // Compute weighted sum: sum over all positions (attention_prob[pos] * value[pos][dim])
     var weighted_sum: f32 = 0.0;
     
-    for (var pos = 0u; pos < seq_len; pos++) {
+    for (var pos = 0u; pos < seq_len && pos < 10000u; pos++) {
         // Probability index: [batch_idx][head_idx][pos]
         // CRITICAL: Use max_seq_len for stride, not seq_len, since buffer is sized [batch, heads, max_seq_len]
         let prob_idx = batch_idx * num_heads * max_seq_len + head_idx * max_seq_len + pos;
