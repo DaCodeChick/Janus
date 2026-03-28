@@ -187,9 +187,6 @@ pub async fn matmul(
     // Submit commands
     queue.submit(Some(encoder.finish()));
 
-    // Wait for completion
-    let _ = device.poll(wgpu::PollType::wait_indefinitely());
-
     Ok(output)
 }
 
