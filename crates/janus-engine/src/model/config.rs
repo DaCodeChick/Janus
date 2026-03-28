@@ -10,6 +10,8 @@ use thiserror::Error;
 
 use crate::formats::{GgufMetadata, MetadataValue};
 
+const HARD_MAX_SEQ_LEN: u32 = 4096;
+
 /// Errors that can occur when loading model configuration
 #[derive(Error, Debug)]
 pub enum ConfigError {
@@ -274,6 +276,16 @@ impl HuggingFaceConfig {
 /// This maps the HuggingFace config format to Janus's internal format
 impl From<&HuggingFaceConfig> for crate::model::ModelConfig {
     fn from(config: &HuggingFaceConfig) -> Self {
+        let parsed_max_seq_len = config.max_seq_len();
+        let max_seq_len = parsed_max_seq_len.min(HARD_MAX_SEQ_LEN);
+        if max_seq_len != parsed_max_seq_len {
+            tracing::warn!(
+                "Clamped model max_seq_len from {} to {} (hard engine safety limit)",
+                parsed_max_seq_len,
+                max_seq_len
+            );
+        }
+
         Self {
             hidden_dim: config.hidden_size,
             num_layers: config.num_hidden_layers,
@@ -282,7 +294,7 @@ impl From<&HuggingFaceConfig> for crate::model::ModelConfig {
             head_dim: config.head_dim(),
             ffn_dim: config.ffn_dim(),
             vocab_size: config.vocab_size,
-            max_seq_len: config.max_seq_len(),
+            max_seq_len,
             rms_norm_eps: config.rms_norm_eps,
             rope_freq_base: 10000.0,
             batch_size: 1, // Default to single-sequence inference
@@ -380,7 +392,16 @@ pub fn model_config_from_gguf_metadata(
         Err(e) => return Err(e),
     };
     let ffn_dim = metadata_as_u32(metadata, &format!("{}.feed_forward_length", architecture))?;
-    let max_seq_len = metadata_as_u32(metadata, &format!("{}.context_length", architecture))?;
+    let parsed_max_seq_len =
+        metadata_as_u32(metadata, &format!("{}.context_length", architecture))?;
+    let max_seq_len = parsed_max_seq_len.min(HARD_MAX_SEQ_LEN);
+    if max_seq_len != parsed_max_seq_len {
+        tracing::warn!(
+            "Clamped GGUF context_length from {} to {} (hard engine safety limit)",
+            parsed_max_seq_len,
+            max_seq_len
+        );
+    }
     let rms_norm_eps = metadata_as_f32(
         metadata,
         &format!("{}.attention.layer_norm_rms_epsilon", architecture),
