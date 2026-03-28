@@ -34,6 +34,7 @@ pub use attention::compute_attention;
 pub use elementwise::{add_tensors, elementwise_mul};
 pub use matmul::{gemm, matmul};
 pub use quantized::{
+    gemm_auto,
     gemm_q4_k, gemm_q5_k, gemm_q8_0,
     Q4K_BLOCK_BYTES, Q4K_BLOCK_SIZE,
     Q5K_BLOCK_BYTES, Q5K_BLOCK_SIZE,

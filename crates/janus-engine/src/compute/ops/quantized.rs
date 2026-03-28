@@ -8,6 +8,8 @@
 use crate::compute::engine::ComputeEngine;
 use crate::compute::error::Result;
 use crate::compute::pipeline_cache::PipelineCache;
+use crate::compute::GpuTensor;
+use crate::formats::TensorDType;
 use wgpu::util::DeviceExt;
 
 /// Uniforms structure for Q4_K matrix-vector multiplication
@@ -56,6 +58,52 @@ pub const Q8_0_BLOCK_SIZE: usize = 32;
 /// - 32 bytes: 32 int8 quantized values
 /// Total: 34 bytes per block
 pub const Q8_0_BLOCK_BYTES: usize = 34;
+
+pub fn gemm_auto(
+    engine: &ComputeEngine,
+    encoder: &mut wgpu::CommandEncoder,
+    pipeline_cache: &PipelineCache,
+    matrix_a: &wgpu::Buffer,
+    matrix_b: &GpuTensor,
+    output: &wgpu::Buffer,
+    batch_size: u32,
+    m: u32,
+    k: u32,
+    n: u32,
+) -> Result<()> {
+    match matrix_b.ggml_type {
+        TensorDType::Q4_K | TensorDType::Q5_K | TensorDType::Q8_0 => {
+            crate::compute::ops::matmul::gemm(
+                engine,
+                encoder,
+                pipeline_cache,
+                matrix_a,
+                &matrix_b.buffer,
+                output,
+                batch_size,
+                m,
+                k,
+                n,
+            )
+        }
+        TensorDType::F16 | TensorDType::F32 | TensorDType::BF16 => crate::compute::ops::matmul::gemm(
+            engine,
+            encoder,
+            pipeline_cache,
+            matrix_a,
+            &matrix_b.buffer,
+            output,
+            batch_size,
+            m,
+            k,
+            n,
+        ),
+        _ => panic!(
+            "FATAL: No compute shader bound for tensor type {:?}",
+            matrix_b.ggml_type
+        ),
+    }
+}
 
 /// Perform matrix-vector multiplication with Q4_K quantized matrix: y = M * x
 ///

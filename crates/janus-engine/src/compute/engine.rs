@@ -1,6 +1,7 @@
 //! ComputeEngine for initializing GPU and loading model tensors into VRAM
 
 use super::error::{ComputeError, Result};
+use super::tensor::GpuTensor;
 use crate::formats::{ModelLoader, TensorDType};
 use half::f16;
 use std::collections::HashMap;
@@ -416,7 +417,7 @@ impl ComputeEngine {
     /// - **Q5_K**: 5-bit quantized format, dequantized on-the-fly in shader
     /// - **Q8_0**: 8-bit quantized format, dequantized on-the-fly in shader
     /// - **Other types**: Skipped with warning
-    pub fn allocate_tensors<L: ModelLoader>(&self, loader: &L) -> Result<HashMap<String, wgpu::Buffer>> {
+    pub fn allocate_tensors<L: ModelLoader>(&self, loader: &L) -> Result<HashMap<String, GpuTensor>> {
         let tensors = loader.tensors()
             .map_err(|e| ComputeError::Other(format!("Failed to load tensors: {}", e)))?;
         
@@ -456,7 +457,13 @@ impl ComputeEngine {
                             tensor.data.len()
                         );
 
-                        tensor_buffers.insert(name, buffer);
+                        tensor_buffers.insert(
+                            name,
+                            GpuTensor {
+                                buffer,
+                                ggml_type: TensorDType::F32,
+                            },
+                        );
                     } else {
                         // 2D+ tensors: Convert F32 to packed FP16 format (50% VRAM reduction)
                         let f32_data: &[f32] = bytemuck::cast_slice(tensor.data);
@@ -480,7 +487,13 @@ impl ComputeEngine {
                             50.0
                         );
 
-                        tensor_buffers.insert(name, buffer);
+                        tensor_buffers.insert(
+                            name,
+                            GpuTensor {
+                                buffer,
+                                ggml_type: TensorDType::F16,
+                            },
+                        );
                     }
                 }
 
@@ -511,7 +524,13 @@ impl ComputeEngine {
                             f32_bytes.len()
                         );
 
-                        tensor_buffers.insert(name, buffer);
+                        tensor_buffers.insert(
+                            name,
+                            GpuTensor {
+                                buffer,
+                                ggml_type: TensorDType::F16,
+                            },
+                        );
                     } else {
                         // 2D+ tensors: Convert F16 to packed FP16 format (efficient storage)
                         let packed_data = Self::f16_to_packed_f16(tensor.data);
@@ -533,7 +552,13 @@ impl ComputeEngine {
                             tensor.data.len() / 2
                         );
 
-                        tensor_buffers.insert(name, buffer);
+                        tensor_buffers.insert(
+                            name,
+                            GpuTensor {
+                                buffer,
+                                ggml_type: TensorDType::F16,
+                            },
+                        );
                     }
                 }
 
@@ -565,7 +590,13 @@ impl ComputeEngine {
                             f32_bytes.len()
                         );
 
-                        tensor_buffers.insert(name, buffer);
+                        tensor_buffers.insert(
+                            name,
+                            GpuTensor {
+                                buffer,
+                                ggml_type: TensorDType::F16,
+                            },
+                        );
                     } else {
                         // 2D+ tensors: Convert BF16 to packed FP16 format (via F32 intermediate)
                         let packed_data = Self::bf16_to_packed_f16(tensor.data);
@@ -587,7 +618,13 @@ impl ComputeEngine {
                             tensor.data.len() / 2
                         );
 
-                        tensor_buffers.insert(name, buffer);
+                        tensor_buffers.insert(
+                            name,
+                            GpuTensor {
+                                buffer,
+                                ggml_type: TensorDType::Q4_K,
+                            },
+                        );
                     }
                 }
 
@@ -611,7 +648,13 @@ impl ComputeEngine {
                             packed_bytes.len()
                         );
 
-                        tensor_buffers.insert(name, buffer);
+                        tensor_buffers.insert(
+                            name,
+                            GpuTensor {
+                                buffer,
+                                ggml_type: TensorDType::Q4_K,
+                            },
+                        );
                     } else {
                         // Q4_K: Keep quantized format, dequantize on-the-fly in shader
                         let size_bytes = tensor.data.len();
@@ -631,7 +674,13 @@ impl ComputeEngine {
                             size_bytes
                         );
 
-                        tensor_buffers.insert(name, buffer);
+                        tensor_buffers.insert(
+                            name,
+                            GpuTensor {
+                                buffer,
+                                ggml_type: TensorDType::Q5_K,
+                            },
+                        );
                     }
                 }
 
@@ -655,7 +704,13 @@ impl ComputeEngine {
                             packed_bytes.len()
                         );
 
-                        tensor_buffers.insert(name, buffer);
+                        tensor_buffers.insert(
+                            name,
+                            GpuTensor {
+                                buffer,
+                                ggml_type: TensorDType::Q5_K,
+                            },
+                        );
                     } else {
                         // Q5_K: Keep quantized format, dequantize on-the-fly in shader
                         let size_bytes = tensor.data.len();
@@ -675,7 +730,13 @@ impl ComputeEngine {
                             size_bytes
                         );
 
-                        tensor_buffers.insert(name, buffer);
+                        tensor_buffers.insert(
+                            name,
+                            GpuTensor {
+                                buffer,
+                                ggml_type: TensorDType::Q8_0,
+                            },
+                        );
                     }
                 }
 
@@ -699,7 +760,13 @@ impl ComputeEngine {
                             packed_bytes.len()
                         );
 
-                        tensor_buffers.insert(name, buffer);
+                        tensor_buffers.insert(
+                            name,
+                            GpuTensor {
+                                buffer,
+                                ggml_type: TensorDType::Q8_0,
+                            },
+                        );
                     } else {
                         // Q8_0: Keep quantized format, dequantize on-the-fly in shader
                         let size_bytes = tensor.data.len();
@@ -719,7 +786,13 @@ impl ComputeEngine {
                             size_bytes
                         );
 
-                        tensor_buffers.insert(name, buffer);
+                        tensor_buffers.insert(
+                            name,
+                            GpuTensor {
+                                buffer,
+                                ggml_type: TensorDType::Q8_0,
+                            },
+                        );
                     }
                 }
 
@@ -745,7 +818,13 @@ impl ComputeEngine {
                         num_elements
                     );
 
-                    tensor_buffers.insert(name, buffer);
+                    tensor_buffers.insert(
+                        name,
+                        GpuTensor {
+                            buffer,
+                            ggml_type: TensorDType::F16,
+                        },
+                    );
                 }
 
                 _ => {

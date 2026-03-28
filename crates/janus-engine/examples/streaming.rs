@@ -23,58 +23,58 @@ use std::env;
 use std::io::{self, Write};
 use std::path::PathBuf;
 use janus_engine::{
-    ComputeEngine, GgufFile, SafetensorsFile, Model, ModelConfig, Tokenizer, Sampler,
+    ComputeEngine, GgufFile, GpuTensor, SafetensorsFile, Model, ModelConfig, Tokenizer, Sampler,
     SamplerConfig, TransformerBlock, TransformerBlockConfig,
 };
-use janus_engine::model::block::get_tensor;
+use janus_engine::model::block::{get_gpu_tensor, get_tensor};
 
 /// Build TransformerBlock from tensor map
 fn build_transformer_block(
     config: &TransformerBlockConfig,
     layer_idx: u32,
-    tensors: &HashMap<String, wgpu::Buffer>,
+    tensors: &HashMap<String, GpuTensor>,
 ) -> Result<TransformerBlock, Box<dyn std::error::Error>> {
-    let q = get_tensor(
+    let q = get_gpu_tensor(
         tensors,
         &format!("model.layers.{}.self_attn.q_proj.weight", layer_idx),
         &format!("blk.{}.attn_q.weight", layer_idx),
     )?;
-    let k = get_tensor(
+    let k = get_gpu_tensor(
         tensors,
         &format!("model.layers.{}.self_attn.k_proj.weight", layer_idx),
         &format!("blk.{}.attn_k.weight", layer_idx),
     )?;
-    let v = get_tensor(
+    let v = get_gpu_tensor(
         tensors,
         &format!("model.layers.{}.self_attn.v_proj.weight", layer_idx),
         &format!("blk.{}.attn_v.weight", layer_idx),
     )?;
-    let o = get_tensor(
+    let o = get_gpu_tensor(
         tensors,
         &format!("model.layers.{}.self_attn.o_proj.weight", layer_idx),
         &format!("blk.{}.attn_output.weight", layer_idx),
     )?;
-    let gate = get_tensor(
+    let gate = get_gpu_tensor(
         tensors,
         &format!("model.layers.{}.mlp.gate_proj.weight", layer_idx),
         &format!("blk.{}.ffn_gate.weight", layer_idx),
     )?;
-    let up = get_tensor(
+    let up = get_gpu_tensor(
         tensors,
         &format!("model.layers.{}.mlp.up_proj.weight", layer_idx),
         &format!("blk.{}.ffn_up.weight", layer_idx),
     )?;
-    let down = get_tensor(
+    let down = get_gpu_tensor(
         tensors,
         &format!("model.layers.{}.mlp.down_proj.weight", layer_idx),
         &format!("blk.{}.ffn_down.weight", layer_idx),
     )?;
-    let attn_norm = get_tensor(
+    let attn_norm = get_gpu_tensor(
         tensors,
         &format!("model.layers.{}.input_layernorm.weight", layer_idx),
         &format!("blk.{}.attn_norm.weight", layer_idx),
     )?;
-    let ffn_norm = get_tensor(
+    let ffn_norm = get_gpu_tensor(
         tensors,
         &format!("model.layers.{}.post_attention_layernorm.weight", layer_idx),
         &format!("blk.{}.ffn_norm.weight", layer_idx),

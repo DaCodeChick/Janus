@@ -9,18 +9,36 @@
 
 use crate::compute::cache::KVCache;
 use crate::compute::ops::{
-    add_tensors, compute_attention, elementwise_mul, gemm, rmsnorm, rope, silu,
+    add_tensors, compute_attention, elementwise_mul, gemm_auto, rmsnorm, rope, silu,
 };
 use crate::compute::pipeline_cache::PipelineCache;
-use crate::compute::{ComputeEngine, ComputeError, Result};
+use crate::compute::{ComputeEngine, ComputeError, GpuTensor, Result};
 use std::collections::HashMap;
 
 /// Fetch a tensor by trying Safetensors name first, then GGUF fallback.
 pub fn get_tensor<'a>(
-    tensors: &'a HashMap<String, wgpu::Buffer>,
+    tensors: &'a HashMap<String, GpuTensor>,
     st_name: &str,
     gguf_name: &str,
 ) -> Result<&'a wgpu::Buffer> {
+    tensors
+        .get(st_name)
+        .or_else(|| tensors.get(gguf_name))
+        .map(|t| &t.buffer)
+        .ok_or_else(|| {
+            ComputeError::Other(format!(
+                "Tensor not found. Tried '{}' then '{}'.",
+                st_name, gguf_name
+            ))
+        })
+}
+
+/// Fetch a typed GPU tensor by trying Safetensors name first, then GGUF fallback.
+pub fn get_gpu_tensor<'a>(
+    tensors: &'a HashMap<String, GpuTensor>,
+    st_name: &str,
+    gguf_name: &str,
+) -> Result<&'a GpuTensor> {
     tensors
         .get(st_name)
         .or_else(|| tensors.get(gguf_name))
@@ -60,27 +78,27 @@ pub struct TransformerBlock {
 
     // Attention weights
     /// Query projection weight [hidden_dim × hidden_dim]
-    attn_q_weight: wgpu::Buffer,
+    attn_q_weight: GpuTensor,
     /// Key projection weight [hidden_dim × hidden_dim]
-    attn_k_weight: wgpu::Buffer,
+    attn_k_weight: GpuTensor,
     /// Value projection weight [hidden_dim × hidden_dim]
-    attn_v_weight: wgpu::Buffer,
+    attn_v_weight: GpuTensor,
     /// Output projection weight [hidden_dim × hidden_dim]
-    attn_output_weight: wgpu::Buffer,
+    attn_output_weight: GpuTensor,
 
     // Feed-forward network weights
     /// Gate projection weight [hidden_dim × ffn_dim]
-    ffn_gate_weight: wgpu::Buffer,
+    ffn_gate_weight: GpuTensor,
     /// Up projection weight [hidden_dim × ffn_dim]
-    ffn_up_weight: wgpu::Buffer,
+    ffn_up_weight: GpuTensor,
     /// Down projection weight [ffn_dim × hidden_dim]
-    ffn_down_weight: wgpu::Buffer,
+    ffn_down_weight: GpuTensor,
 
     // Normalization weights
     /// Attention input normalization weight [hidden_dim]
-    attn_norm_weight: wgpu::Buffer,
+    attn_norm_weight: GpuTensor,
     /// FFN input normalization weight [hidden_dim]
-    ffn_norm_weight: wgpu::Buffer,
+    ffn_norm_weight: GpuTensor,
 }
 
 impl TransformerBlock {
@@ -100,15 +118,15 @@ impl TransformerBlock {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         config: TransformerBlockConfig,
-        attn_q_weight: wgpu::Buffer,
-        attn_k_weight: wgpu::Buffer,
-        attn_v_weight: wgpu::Buffer,
-        attn_output_weight: wgpu::Buffer,
-        ffn_gate_weight: wgpu::Buffer,
-        ffn_up_weight: wgpu::Buffer,
-        ffn_down_weight: wgpu::Buffer,
-        attn_norm_weight: wgpu::Buffer,
-        ffn_norm_weight: wgpu::Buffer,
+        attn_q_weight: GpuTensor,
+        attn_k_weight: GpuTensor,
+        attn_v_weight: GpuTensor,
+        attn_output_weight: GpuTensor,
+        ffn_gate_weight: GpuTensor,
+        ffn_up_weight: GpuTensor,
+        ffn_down_weight: GpuTensor,
+        attn_norm_weight: GpuTensor,
+        ffn_norm_weight: GpuTensor,
     ) -> Self {
         Self {
             config,
@@ -208,7 +226,7 @@ impl TransformerBlock {
             pipeline_cache,
             input,
             scratch_input_norm,
-            &self.attn_norm_weight,
+            &self.attn_norm_weight.buffer,
             self.config.batch_size,
             self.config.hidden_dim,
             self.config.rms_norm_eps,
@@ -218,7 +236,7 @@ impl TransformerBlock {
         // For GQA: Q uses full hidden_dim, but K/V use num_kv_heads * head_dim
         let kv_dim = self.config.num_kv_heads * self.config.head_dim;
 
-        gemm(
+        gemm_auto(
             engine,
             encoder,
             pipeline_cache,
@@ -231,7 +249,7 @@ impl TransformerBlock {
             self.config.hidden_dim, // N = output dimension (weight is [N,K])
         )?;
 
-        gemm(
+        gemm_auto(
             engine,
             encoder,
             pipeline_cache,
@@ -244,7 +262,7 @@ impl TransformerBlock {
             kv_dim,                 // N = output dimension (weight is [N,K])
         )?;
 
-        gemm(
+        gemm_auto(
             engine,
             encoder,
             pipeline_cache,
@@ -320,7 +338,7 @@ impl TransformerBlock {
         )?;
 
         // Step 6: Output projection
-        gemm(
+        gemm_auto(
             engine,
             encoder,
             pipeline_cache,
@@ -355,14 +373,14 @@ impl TransformerBlock {
             pipeline_cache,
             scratch_hidden1,
             scratch_ffn_norm,
-            &self.ffn_norm_weight,
+            &self.ffn_norm_weight.buffer,
             self.config.batch_size,
             self.config.hidden_dim,
             self.config.rms_norm_eps,
         )?;
 
         // Step 9: Gate projection
-        gemm(
+        gemm_auto(
             engine,
             encoder,
             pipeline_cache,
@@ -376,7 +394,7 @@ impl TransformerBlock {
         )?;
 
         // Step 10: Up projection
-        gemm(
+        gemm_auto(
             engine,
             encoder,
             pipeline_cache,
@@ -412,7 +430,7 @@ impl TransformerBlock {
         )?;
 
         // Step 13: Down projection
-        gemm(
+        gemm_auto(
             engine,
             encoder,
             pipeline_cache,

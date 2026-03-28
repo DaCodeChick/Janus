@@ -6,6 +6,7 @@ pub mod cache;
 mod engine;
 mod error;
 mod kernels;
+mod tensor;
 pub mod ops;
 pub mod pipeline_cache;
 
@@ -16,3 +17,4 @@ pub use engine::ComputeEngine;
 pub use error::{ComputeError, Result};
 pub use kernels::Kernels;
 pub use pipeline_cache::PipelineCache;
+pub use tensor::GpuTensor;

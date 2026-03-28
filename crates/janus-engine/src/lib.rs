@@ -21,7 +21,7 @@ pub mod model;
 pub mod app;
 
 // Re-export commonly used types
-pub use compute::{Buffer, BufferUsage, ComputeBackend, ComputeEngine, DeviceInfo, KVCache};
+pub use compute::{Buffer, BufferUsage, ComputeBackend, ComputeEngine, DeviceInfo, GpuTensor, KVCache};
 pub use app::{JanusApp, JanusPlugin};
 pub use formats::{
     GGMLType, GgufError, GgufFile, GgufMetadata, MetadataValue, SafetensorsFile, TensorInfo,
