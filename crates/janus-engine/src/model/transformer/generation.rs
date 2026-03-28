@@ -116,9 +116,17 @@ impl Model {
         tracing::info!("Prefill phase: processing {} prompt tokens", token_ids.len());
         
         for (idx, &token_id) in token_ids.iter().enumerate() {
-            tracing::debug!("Prefill token {}/{}: ID={}", idx + 1, token_ids.len(), token_id);
+            println!(
+                "⚙️ [Prefill] Processing token {}/{}...",
+                idx + 1,
+                token_ids.len()
+            );
             self.forward(token_id, seq_pos).await?;
             seq_pos += 1;
+
+            // Let the driver queue progress and yield to the runtime between prefill steps.
+            let _ = self.engine.device().poll(wgpu::PollType::Poll);
+            tokio::task::yield_now().await;
         }
 
         // Get the last token for autoregressive generation
@@ -328,9 +336,17 @@ impl Model {
         tracing::info!("Prefill phase: processing {} prompt tokens", token_ids.len());
         
         for (idx, &token_id) in token_ids.iter().enumerate() {
-            tracing::debug!("Prefill token {}/{}: ID={}", idx + 1, token_ids.len(), token_id);
+            println!(
+                "⚙️ [Prefill] Processing token {}/{}...",
+                idx + 1,
+                token_ids.len()
+            );
             self.forward(token_id, seq_pos).await?;
             seq_pos += 1;
+
+            // Let the driver queue progress and yield to the runtime between prefill steps.
+            let _ = self.engine.device().poll(wgpu::PollType::Poll);
+            tokio::task::yield_now().await;
         }
 
         // Get the last token for autoregressive generation
