@@ -7,6 +7,7 @@
 
 use crate::compute::engine::ComputeEngine;
 use crate::compute::error::Result;
+use crate::compute::ops::matmul;
 use crate::compute::pipeline_cache::PipelineCache;
 use crate::compute::GpuTensor;
 use crate::formats::TensorDType;
@@ -72,18 +73,85 @@ pub fn gemm_auto(
     n: u32,
 ) -> Result<()> {
     match matrix_b.ggml_type {
-        TensorDType::Q4_K | TensorDType::Q5_K | TensorDType::Q8_0 => {
-            crate::compute::ops::matmul::gemm(
+        TensorDType::Q4_K => {
+            if batch_size != 1 || m != 1 {
+                return matmul::gemm(
+                    engine,
+                    encoder,
+                    pipeline_cache,
+                    matrix_a,
+                    &matrix_b.buffer,
+                    output,
+                    batch_size,
+                    m,
+                    k,
+                    n,
+                );
+            }
+            gemm_q4_k_into(
                 engine,
                 encoder,
                 pipeline_cache,
-                matrix_a,
                 &matrix_b.buffer,
+                matrix_a,
                 output,
                 batch_size,
-                m,
-                k,
                 n,
+                k,
+            )
+        }
+        TensorDType::Q5_K => {
+            if batch_size != 1 || m != 1 {
+                return matmul::gemm(
+                    engine,
+                    encoder,
+                    pipeline_cache,
+                    matrix_a,
+                    &matrix_b.buffer,
+                    output,
+                    batch_size,
+                    m,
+                    k,
+                    n,
+                );
+            }
+            gemm_q5_k_into(
+                engine,
+                encoder,
+                pipeline_cache,
+                &matrix_b.buffer,
+                matrix_a,
+                output,
+                batch_size,
+                n,
+                k,
+            )
+        }
+        TensorDType::Q8_0 => {
+            if batch_size != 1 || m != 1 {
+                return matmul::gemm(
+                    engine,
+                    encoder,
+                    pipeline_cache,
+                    matrix_a,
+                    &matrix_b.buffer,
+                    output,
+                    batch_size,
+                    m,
+                    k,
+                    n,
+                );
+            }
+            gemm_q8_0_into(
+                engine,
+                encoder,
+                pipeline_cache,
+                &matrix_b.buffer,
+                matrix_a,
+                output,
+                batch_size,
+                n,
+                k,
             )
         }
         TensorDType::F16 | TensorDType::BF16 => crate::compute::ops::matmul::gemm(
@@ -115,6 +183,198 @@ pub fn gemm_auto(
             matrix_b.ggml_type
         ),
     }
+}
+
+fn gemm_q4_k_into(
+    engine: &ComputeEngine,
+    encoder: &mut wgpu::CommandEncoder,
+    pipeline_cache: &PipelineCache,
+    matrix_q4k: &wgpu::Buffer,
+    vector: &wgpu::Buffer,
+    output: &wgpu::Buffer,
+    batch_size: u32,
+    rows: u32,
+    cols: u32,
+) -> Result<()> {
+    if cols % Q4K_BLOCK_SIZE as u32 != 0 {
+        return Err(crate::compute::error::ComputeError::InvalidDimensions(format!(
+            "Q4_K gemm requires cols to be multiple of {}, got {}",
+            Q4K_BLOCK_SIZE, cols
+        )));
+    }
+
+    let device = engine.device();
+    let uniforms = Q4KUniforms {
+        m: rows,
+        k: cols,
+        num_blocks: cols / Q4K_BLOCK_SIZE as u32,
+        _pad: 0,
+    };
+    let uniforms_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("gemm_q4_k_uniforms"),
+        contents: bytemuck::cast_slice(&[uniforms]),
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+    });
+
+    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("gemm_q4_k_bind_group"),
+        layout: &pipeline_cache.gemm_q4_k_layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: matrix_q4k.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: vector.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: output.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 3,
+                resource: uniforms_buffer.as_entire_binding(),
+            },
+        ],
+    });
+
+    let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+        label: Some("gemm_q4_k_pass"),
+        timestamp_writes: None,
+    });
+    compute_pass.set_pipeline(&pipeline_cache.gemm_q4_k_pipeline);
+    compute_pass.set_bind_group(0, &bind_group, &[]);
+    compute_pass.dispatch_workgroups(((rows * batch_size) + 63) / 64, 1, 1);
+    Ok(())
+}
+
+fn gemm_q5_k_into(
+    engine: &ComputeEngine,
+    encoder: &mut wgpu::CommandEncoder,
+    pipeline_cache: &PipelineCache,
+    matrix_q5k: &wgpu::Buffer,
+    vector: &wgpu::Buffer,
+    output: &wgpu::Buffer,
+    batch_size: u32,
+    rows: u32,
+    cols: u32,
+) -> Result<()> {
+    if cols % Q5K_BLOCK_SIZE as u32 != 0 {
+        return Err(crate::compute::error::ComputeError::InvalidDimensions(format!(
+            "Q5_K gemm requires cols to be multiple of {}, got {}",
+            Q5K_BLOCK_SIZE, cols
+        )));
+    }
+
+    let device = engine.device();
+    let uniforms = Q5KUniforms {
+        m: rows,
+        k: cols,
+        num_blocks: cols / Q5K_BLOCK_SIZE as u32,
+        _pad: 0,
+    };
+    let uniforms_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("gemm_q5_k_uniforms"),
+        contents: bytemuck::cast_slice(&[uniforms]),
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+    });
+
+    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("gemm_q5_k_bind_group"),
+        layout: &pipeline_cache.gemm_q5_k_layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: matrix_q5k.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: vector.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: output.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 3,
+                resource: uniforms_buffer.as_entire_binding(),
+            },
+        ],
+    });
+
+    let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+        label: Some("gemm_q5_k_pass"),
+        timestamp_writes: None,
+    });
+    compute_pass.set_pipeline(&pipeline_cache.gemm_q5_k_pipeline);
+    compute_pass.set_bind_group(0, &bind_group, &[]);
+    compute_pass.dispatch_workgroups(((rows * batch_size) + 63) / 64, 1, 1);
+    Ok(())
+}
+
+fn gemm_q8_0_into(
+    engine: &ComputeEngine,
+    encoder: &mut wgpu::CommandEncoder,
+    pipeline_cache: &PipelineCache,
+    matrix_q8_0: &wgpu::Buffer,
+    vector: &wgpu::Buffer,
+    output: &wgpu::Buffer,
+    batch_size: u32,
+    rows: u32,
+    cols: u32,
+) -> Result<()> {
+    if cols % Q8_0_BLOCK_SIZE as u32 != 0 {
+        return Err(crate::compute::error::ComputeError::InvalidDimensions(format!(
+            "Q8_0 gemm requires cols to be multiple of {}, got {}",
+            Q8_0_BLOCK_SIZE, cols
+        )));
+    }
+
+    let device = engine.device();
+    let uniforms = Q8_0Uniforms {
+        m: rows,
+        k: cols,
+        num_blocks: cols / Q8_0_BLOCK_SIZE as u32,
+        _pad: 0,
+    };
+    let uniforms_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("gemm_q8_0_uniforms"),
+        contents: bytemuck::cast_slice(&[uniforms]),
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+    });
+
+    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("gemm_q8_0_bind_group"),
+        layout: &pipeline_cache.gemm_q8_0_layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: matrix_q8_0.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: vector.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: output.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 3,
+                resource: uniforms_buffer.as_entire_binding(),
+            },
+        ],
+    });
+
+    let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+        label: Some("gemm_q8_0_pass"),
+        timestamp_writes: None,
+    });
+    compute_pass.set_pipeline(&pipeline_cache.gemm_q8_0_pipeline);
+    compute_pass.set_bind_group(0, &bind_group, &[]);
+    compute_pass.dispatch_workgroups(((rows * batch_size) + 63) / 64, 1, 1);
+    Ok(())
 }
 
 /// Perform matrix-vector multiplication with Q4_K quantized matrix: y = M * x
