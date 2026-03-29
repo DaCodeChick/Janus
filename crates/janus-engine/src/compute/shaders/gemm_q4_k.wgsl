@@ -27,40 +27,29 @@ struct Q4KUniforms {
     _pad: u32,
 }
 
+fn f16_to_f32_safe(h: u32) -> f32 {
+    let s = (h & 0x8000u) << 16u;
+    let e = (h & 0x7C00u) >> 10u;
+    let m = h & 0x03FFu;
+
+    if (e == 0u) {
+        return bitcast<f32>(s);
+    }
+    if (e == 31u) {
+        return bitcast<f32>(s | 0x7F800000u | (m << 13u));
+    }
+    let exp = e + 112u;
+    return bitcast<f32>(s | (exp << 23u) | (m << 13u));
+}
+
+fn manual_unpack(val: u32) -> vec2<f32> {
+    return vec2<f32>(f16_to_f32_safe(val & 0xFFFFu), f16_to_f32_safe(val >> 16u));
+}
+
 @group(0) @binding(0) var<storage, read> matrix_a_q4k: array<u32>;  // Quantized matrix A (Q4_K blocks)
 @group(0) @binding(1) var<storage, read> vector_b: array<f32>;      // Input vector B (K elements)
 @group(0) @binding(2) var<storage, read_write> vector_c: array<f32>; // Output vector C (M elements)
 @group(0) @binding(3) var<uniform> uniforms: Q4KUniforms;
-
-// Convert f16 bits to f32
-fn f16_to_f32(bits: u32) -> f32 {
-    let sign = (bits >> 15u) & 1u;
-    let exponent = (bits >> 10u) & 0x1Fu;
-    let mantissa = bits & 0x3FFu;
-    
-    // Handle special cases
-    if (exponent == 0u) {
-        if (mantissa == 0u) {
-            // Zero
-            return select(0.0, -0.0, sign == 1u);
-        } else {
-            // Denormalized number
-            let f32_mantissa = f32(mantissa) / 1024.0;
-            let value = f32_mantissa * pow(2.0, -14.0);
-            return select(value, -value, sign == 1u);
-        }
-    } else if (exponent == 31u) {
-        // Infinity or NaN
-        return select(1e38, -1e38, sign == 1u); // Treat as large number
-    }
-    
-    // Normalized number
-    let f32_exponent = i32(exponent) - 15 + 127;
-    let f32_mantissa = mantissa << 13u;
-    let f32_bits = (sign << 31u) | (u32(f32_exponent) << 23u) | f32_mantissa;
-    
-    return bitcast<f32>(f32_bits);
-}
 
 // Dequantize and compute dot product for one Q4_K block (256 elements)
 fn process_q4k_block(
@@ -78,8 +67,9 @@ fn process_q4k_block(
     
     // Load super-scale (d) and super-min (dmin) - last word
     let metadata_word = matrix_a_q4k[base + 35u];
-    let d = f16_to_f32(metadata_word & 0xFFFFu);
-    let dmin = f16_to_f32((metadata_word >> 16u) & 0xFFFFu);
+    let unpacked_meta = manual_unpack(metadata_word);
+    let d = unpacked_meta.x;
+    let dmin = unpacked_meta.y;
     
     var sum: f32 = 0.0;
     

@@ -14,6 +14,21 @@ struct MatVecUniforms {
     _pad1: u32,   // Padding for alignment
 }
 
+fn f16_to_f32_safe(h: u32) -> f32 {
+    let s = (h & 0x8000u) << 16u;
+    let e = (h & 0x7C00u) >> 10u;
+    let m = h & 0x03FFu;
+
+    if (e == 0u) { return bitcast<f32>(s); }
+    if (e == 31u) { return bitcast<f32>(s | 0x7F800000u | (m << 13u)); }
+    let exp = e + 112u;
+    return bitcast<f32>(s | (exp << 23u) | (m << 13u));
+}
+
+fn manual_unpack(val: u32) -> vec2<f32> {
+    return vec2<f32>(f16_to_f32_safe(val & 0xFFFFu), f16_to_f32_safe(val >> 16u));
+}
+
 @group(0) @binding(0) var<storage, read> matrix: array<u32>;      // Matrix M (rows * cols / 2 elements, packed f16)
 @group(0) @binding(1) var<storage, read> vector: array<f32>;      // Input vector x (cols elements, f32)
 @group(0) @binding(2) var<storage, read_write> output: array<f32>; // Output vector y (rows elements, f32)
@@ -41,8 +56,7 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
         // Read packed u32 (contains 2 f16 values)
         let packed = matrix[global_idx / 2u];
         
-        // Unpack using WebGPU builtin: returns vec2<f32> with converted values
-        let unpacked = unpack2x16float(packed);
+        let unpacked = manual_unpack(packed);
         
         // Select the correct f16 value (low 16 bits = even index, high 16 bits = odd index)
         let is_odd = (global_idx % 2u) != 0u;

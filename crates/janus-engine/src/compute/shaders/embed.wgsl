@@ -8,6 +8,21 @@ struct EmbedParams {
     hidden_dim: u32,
 }
 
+fn f16_to_f32_safe(h: u32) -> f32 {
+    let s = (h & 0x8000u) << 16u;
+    let e = (h & 0x7C00u) >> 10u;
+    let m = h & 0x03FFu;
+
+    if (e == 0u) { return bitcast<f32>(s); }
+    if (e == 31u) { return bitcast<f32>(s | 0x7F800000u | (m << 13u)); }
+    let exp = e + 112u;
+    return bitcast<f32>(s | (exp << 23u) | (m << 13u));
+}
+
+fn manual_unpack(val: u32) -> vec2<f32> {
+    return vec2<f32>(f16_to_f32_safe(val & 0xFFFFu), f16_to_f32_safe(val >> 16u));
+}
+
 @group(0) @binding(0) var<uniform> params: EmbedParams;
 @group(0) @binding(1) var<storage, read> token_ids: array<u32>; // [batch_size] token IDs
 @group(0) @binding(2) var<storage, read> embedding_table: array<u32>; // [vocab_size, hidden_dim / 2] packed f16
@@ -37,8 +52,7 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     // Read packed u32 (contains 2 f16 values)
     let packed = embedding_table[embedding_idx / 2u];
     
-    // Unpack using WebGPU builtin: returns vec2<f32> with converted values
-    let unpacked = unpack2x16float(packed);
+    let unpacked = manual_unpack(packed);
     
     // Select the correct f16 value (low 16 bits = even index, high 16 bits = odd index)
     let is_odd = (embedding_idx % 2u) != 0u;
