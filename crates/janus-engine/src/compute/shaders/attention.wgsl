@@ -44,25 +44,6 @@ struct Params {
     _pad6: u32,
 }
 
-fn f16_to_f32_safe(h: u32) -> f32 {
-    let s = (h & 0x8000u) << 16u;
-    let e = (h & 0x7C00u) >> 10u;
-    let m = h & 0x03FFu;
-
-    if (e == 0u) {
-        return bitcast<f32>(s);
-    }
-    if (e == 31u) {
-        return bitcast<f32>(s | 0x7F800000u | (m << 13u));
-    }
-    let exp = e + 112u;
-    return bitcast<f32>(s | (exp << 23u) | (m << 13u));
-}
-
-fn manual_unpack(val: u32) -> vec2<f32> {
-    return vec2<f32>(f16_to_f32_safe(val & 0xFFFFu), f16_to_f32_safe(val >> 16u));
-}
-
 // Step 1: Compute QK^T scores (batched)
 // Each workgroup handles one (batch_item, head) pair
 // Each thread computes score for one key position
