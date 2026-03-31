@@ -409,7 +409,14 @@ pub fn model_config_from_gguf_metadata(
     let rope_freq_base =
         match metadata_as_f32(metadata, &format!("{}.rope.freq_base", architecture)) {
             Ok(v) => v,
-            Err(ConfigError::MissingGgufMetadata { .. }) => 10000.0,
+            Err(ConfigError::MissingGgufMetadata { .. }) => {
+                // Fallback key used by some exporters.
+                match metadata_as_f32(metadata, "rope.freq_base") {
+                    Ok(v) => v,
+                    Err(ConfigError::MissingGgufMetadata { .. }) => 10000.0,
+                    Err(e) => return Err(e),
+                }
+            }
             Err(e) => return Err(e),
         };
 
