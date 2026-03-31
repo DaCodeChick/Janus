@@ -280,10 +280,12 @@ impl ComputeEngine {
             let offset = block_idx * Self::Q4K_BLOCK_BYTES;
             let block = &q4k_data[offset..offset + Self::Q4K_BLOCK_BYTES];
 
-            let scales_mins = &block[0..12];
-            let qs = &block[12..140];
-            let d_bits = u16::from_le_bytes([block[140], block[141]]);
-            let dmin_bits = u16::from_le_bytes([block[142], block[143]]);
+            // llama.cpp / GGUF Q4_K block layout:
+            // [0..2): d (f16), [2..4): dmin (f16), [4..16): scales/mins, [16..144): qs
+            let d_bits = u16::from_le_bytes([block[0], block[1]]);
+            let dmin_bits = u16::from_le_bytes([block[2], block[3]]);
+            let scales_mins = &block[4..16];
+            let qs = &block[16..144];
             let d = f16::from_bits(d_bits).to_f32();
             let dmin = f16::from_bits(dmin_bits).to_f32();
 
@@ -329,11 +331,13 @@ impl ComputeEngine {
             let offset = block_idx * Self::Q5K_BLOCK_BYTES;
             let block = &q5k_data[offset..offset + Self::Q5K_BLOCK_BYTES];
 
-            let scales_mins = &block[0..12];
-            let qh = &block[12..44];
-            let qs = &block[44..172];
-            let d_bits = u16::from_le_bytes([block[172], block[173]]);
-            let dmin_bits = u16::from_le_bytes([block[174], block[175]]);
+            // llama.cpp / GGUF Q5_K block layout:
+            // [0..2): d (f16), [2..4): dmin (f16), [4..16): scales/mins, [16..48): qh, [48..176): qs
+            let d_bits = u16::from_le_bytes([block[0], block[1]]);
+            let dmin_bits = u16::from_le_bytes([block[2], block[3]]);
+            let scales_mins = &block[4..16];
+            let qh = &block[16..48];
+            let qs = &block[48..176];
             let d = f16::from_bits(d_bits).to_f32();
             let dmin = f16::from_bits(dmin_bits).to_f32();
 
