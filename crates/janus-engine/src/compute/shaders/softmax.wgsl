@@ -67,7 +67,9 @@ fn main(
         for (var i = thread_idx; i < seq_len; i += 256u) {
             // CRITICAL: Use max_seq_len for stride since buffer is [batch, heads, max_seq_len]
             let idx = row_idx * params.max_seq_len + i;
-            let exp_val = exp(input[idx] - max_val);
+            // Numerically stable softmax: subtract max and clamp to avoid overflow.
+            let shifted = min(input[idx] - max_val, 80.0);
+            let exp_val = exp(shifted);
             output[idx] = exp_val;  // Store intermediate exp values
             local_sum += exp_val;
         }
@@ -85,7 +87,7 @@ fn main(
         workgroupBarrier();
     }
     
-    let sum_val = shared_data[0];
+    let sum_val = max(shared_data[0], 1e-20);
     
     // Pass 3: Normalize by dividing by sum
     if (is_active) {
