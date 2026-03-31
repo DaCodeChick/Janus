@@ -18,7 +18,8 @@ struct Params {
 @compute @workgroup_size(1)
 fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let row_idx = global_id.x;
-    if (row_idx >= params.batch_size) {
+    let total_rows = params.batch_size * params.num_heads;
+    if (row_idx >= total_rows) {
         return;
     }
 
