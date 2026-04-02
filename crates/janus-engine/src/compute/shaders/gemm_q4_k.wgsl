@@ -58,18 +58,17 @@ fn process_q4k_block(
 ) -> f32 {
     // Each block is 36 u32 words = 144 bytes
     let base = block_idx * 36u;
-    
-    // Load scales/mins (first 12 bytes = 3 u32 words at base+0)
-    // These contain 8 scales and 8 mins, each 6 bits
-    let scales_mins_0 = matrix_a_q4k[base + 0u];
-    let scales_mins_1 = matrix_a_q4k[base + 1u];
-    let scales_mins_2 = matrix_a_q4k[base + 2u];
-    
-    // Load super-scale (d) and super-min (dmin) - last word
-    let metadata_word = matrix_a_q4k[base + 35u];
+
+    // Load super-scale (d) and super-min (dmin) - FIRST word (Word 0)
+    let metadata_word = matrix_a_q4k[base + 0u];
     let unpacked_meta = manual_unpack(metadata_word);
     let d = unpacked_meta.x;
     let dmin = unpacked_meta.y;
+
+    // Load scales/mins (12 bytes = 3 u32 words starting at Word 1)
+    let scales_mins_0 = matrix_a_q4k[base + 1u];
+    let scales_mins_1 = matrix_a_q4k[base + 2u];
+    let scales_mins_2 = matrix_a_q4k[base + 3u];
     
     var sum: f32 = 0.0;
     
@@ -82,9 +81,9 @@ fn process_q4k_block(
         let scale = d * f32(scale_bits);
         let min_val = dmin * f32(min_bits);
         
-        // Quantized weights start at word 3, 32 u32 words (128 bytes)
+        // Quantized weights start at Word 4, 32 u32 words (128 bytes)
         // Each u32 contains 8 nibbles (4-bit values)
-        let group_base = base + 3u + group * 4u;
+        let group_base = base + 4u + group * 4u;
         
         // Process 32 elements in this group (4 u32 words)
         for (var i: u32 = 0u; i < 4u; i++) {
