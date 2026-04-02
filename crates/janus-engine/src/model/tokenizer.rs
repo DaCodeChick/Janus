@@ -240,7 +240,18 @@ impl GgufTokenizer {
             }
         }
 
-        String::from_utf8(raw_bytes).map_err(|e| TokenizerError::DecodeFailed(e.to_string()))
+        match String::from_utf8(raw_bytes) {
+            Ok(valid_str) => Ok(valid_str),
+            Err(e) => {
+                let utf8_err = e.utf8_error();
+                let bytes = e.into_bytes();
+                if utf8_err.error_len().is_none() {
+                    Ok(String::from_utf8_lossy(&bytes[..utf8_err.valid_up_to()]).into_owned())
+                } else {
+                    Ok(String::from_utf8_lossy(&bytes).into_owned())
+                }
+            }
+        }
     }
 
     /// Get vocabulary size.
