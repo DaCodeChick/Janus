@@ -107,31 +107,31 @@ fn process_q4k_block(
 
 // Extract 6-bit value from packed scales/mins
 fn extract_6bit_from_packed(w0: u32, w1: u32, w2: u32, idx: u32) -> u32 {
-    // 16 6-bit values packed into 96 bits (3 u32 words)
-    let bit_offset = idx * 6u;
-    let word_idx = bit_offset / 32u;
-    let bit_in_word = bit_offset % 32u;
-    
-    if (word_idx == 0u) {
-        if (bit_in_word <= 26u) {
-            return (w0 >> bit_in_word) & 0x3Fu;
-        } else {
-            let bits_in_first = 32u - bit_in_word;
-            let first = (w0 >> bit_in_word) & ((1u << bits_in_first) - 1u);
-            let second = (w1 & ((1u << (6u - bits_in_first)) - 1u)) << bits_in_first;
-            return first | second;
-        }
-    } else if (word_idx == 1u) {
-        if (bit_in_word <= 26u) {
-            return (w1 >> bit_in_word) & 0x3Fu;
-        } else {
-            let bits_in_first = 32u - bit_in_word;
-            let first = (w1 >> bit_in_word) & ((1u << bits_in_first) - 1u);
-            let second = (w2 & ((1u << (6u - bits_in_first)) - 1u)) << bits_in_first;
-            return first | second;
-        }
+    if (idx < 4u) {
+        // sc[0..3]: lower 6 bits of bytes 0..3 (in w0)
+        let b = (w0 >> (idx * 8u)) & 0xFFu;
+        return b & 63u;
+    } else if (idx < 8u) {
+        // sc[4..7]: 4 bits from bytes 8..11 (w2) + 2 bits from bytes 0..3 (w0)
+        let i = idx - 4u;
+        let b_i8 = (w2 >> (i * 8u)) & 0xFFu;
+        let b_i = (w0 >> (i * 8u)) & 0xFFu;
+        let lower_4 = b_i8 & 15u;
+        let upper_2 = b_i >> 6u;
+        return lower_4 | (upper_2 << 4u);
+    } else if (idx < 12u) {
+        // m[0..3]: lower 6 bits of bytes 4..7 (in w1)
+        let i = idx - 8u;
+        let b = (w1 >> (i * 8u)) & 0xFFu;
+        return b & 63u;
     } else {
-        return (w2 >> bit_in_word) & 0x3Fu;
+        // m[4..7]: 4 bits from bytes 8..11 (w2) + 2 bits from bytes 4..7 (w1)
+        let i = idx - 12u;
+        let b_i8 = (w2 >> (i * 8u)) & 0xFFu;
+        let b_i4 = (w1 >> (i * 8u)) & 0xFFu;
+        let lower_4 = b_i8 >> 4u;
+        let upper_2 = b_i4 >> 6u;
+        return lower_4 | (upper_2 << 4u);
     }
 }
 
