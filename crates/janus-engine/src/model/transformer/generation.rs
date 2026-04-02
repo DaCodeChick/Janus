@@ -30,6 +30,49 @@ fn parse_byte_fallback_token(token: &str) -> Option<u8> {
     None
 }
 
+struct StreamDecoder {
+    byte_buffer: Vec<u8>,
+}
+
+impl StreamDecoder {
+    fn new() -> Self {
+        Self {
+            byte_buffer: Vec::new(),
+        }
+    }
+
+    fn decode_stream(&mut self, token_bytes: &[u8]) -> Option<String> {
+        self.byte_buffer.extend_from_slice(token_bytes);
+
+        match std::str::from_utf8(&self.byte_buffer) {
+            Ok(valid_str) => {
+                let result = valid_str.to_string();
+                self.byte_buffer.clear();
+                Some(result)
+            }
+            Err(e) => {
+                if e.error_len().is_none() {
+                    None
+                } else {
+                    let result = String::from_utf8_lossy(&self.byte_buffer).into_owned();
+                    self.byte_buffer.clear();
+                    Some(result)
+                }
+            }
+        }
+    }
+
+    fn flush_lossy(&mut self) -> Option<String> {
+        if self.byte_buffer.is_empty() {
+            return None;
+        }
+
+        let result = String::from_utf8_lossy(&self.byte_buffer).into_owned();
+        self.byte_buffer.clear();
+        Some(result)
+    }
+}
+
 fn normalize_stream_piece(token: &str) -> String {
     let mut normalized = String::with_capacity(token.len());
     for ch in token.chars() {
@@ -370,7 +413,7 @@ impl Model {
             .unwrap_or(0);
         let mut recent_text_window = String::new();
         let max_recent_window_len = max_stop_len.saturating_mul(4);
-        let mut stream_byte_buffer: Vec<u8> = Vec::new();
+        let mut stream_decoder = StreamDecoder::new();
 
         // High-precision benchmark timing
         let generation_start = std::time::Instant::now();
@@ -456,16 +499,14 @@ impl Model {
                         .into_bytes()
                 };
 
-                stream_byte_buffer.extend_from_slice(&token_bytes);
-                if let Ok(text) = std::str::from_utf8(&stream_byte_buffer) {
+                if let Some(text) = stream_decoder.decode_stream(&token_bytes) {
                     if let Some(ref mut cb) = callback {
-                        if !cb(text) {
+                        if !cb(&text) {
                             tracing::info!("Callback requested stop");
                             finish_reason = String::from("stop");
                             break;
                         }
                     }
-                    stream_byte_buffer.clear();
                 }
             }
 
@@ -528,11 +569,9 @@ impl Model {
             seq_pos += 1;
         }
 
-        if !stream_byte_buffer.is_empty() {
-            if let Ok(text) = std::str::from_utf8(&stream_byte_buffer) {
-                if let Some(ref mut cb) = callback {
-                    let _ = cb(text);
-                }
+        if let Some(text) = stream_decoder.flush_lossy() {
+            if let Some(ref mut cb) = callback {
+                let _ = cb(&text);
             }
         }
 
