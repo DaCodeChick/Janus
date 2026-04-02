@@ -56,7 +56,6 @@ fn process_q4k_block(
     block_idx: u32,
     vec_offset: u32
 ) -> f32 {
-    // Each block is 36 u32 words = 144 bytes
     let base = block_idx * 36u;
 
     // Load super-scale (d) and super-min (dmin) - FIRST word (Word 0)
@@ -69,39 +68,51 @@ fn process_q4k_block(
     let scales_mins_0 = matrix_a_q4k[base + 1u];
     let scales_mins_1 = matrix_a_q4k[base + 2u];
     let scales_mins_2 = matrix_a_q4k[base + 3u];
-    
+
     var sum: f32 = 0.0;
-    
-    // Process 8 groups of 32 elements
-    for (var group: u32 = 0u; group < 8u; group++) {
-        // Extract scale and min for this group (6 bits each)
-        let scale_bits = extract_6bit_from_packed(scales_mins_0, scales_mins_1, scales_mins_2, group);
-        let min_bits = extract_6bit_from_packed(scales_mins_0, scales_mins_1, scales_mins_2, group + 8u);
-        
-        let scale = d * f32(scale_bits);
-        let min_val = dmin * f32(min_bits);
-        
-        // Quantized weights start at Word 4, 32 u32 words (128 bytes)
-        // Each u32 contains 8 nibbles (4-bit values)
-        let group_base = base + 4u + group * 4u;
-        
-        // Process 32 elements in this group (4 u32 words)
-        for (var i: u32 = 0u; i < 4u; i++) {
-            let word = matrix_a_q4k[group_base + i];
-            
-            // Each word has 8 nibbles (32 bits / 4 bits = 8)
-            for (var nibble: u32 = 0u; nibble < 8u; nibble++) {
-                let weight_4bit = (word >> (nibble * 4u)) & 0xFu;
-                let weight_f32 = scale * f32(weight_4bit) - min_val;
-                
-                let elem_idx = group * 32u + i * 8u + nibble;
-                let vec_val = vector_b[vec_offset + elem_idx];
-                
-                sum += weight_f32 * vec_val;
+
+    // Process 4 super-groups of 64 elements (256 elements total)
+    for (var j: u32 = 0u; j < 4u; j++) {
+        let group_low = j * 2u;
+        let group_high = j * 2u + 1u;
+
+        // Extract scales and mins for both groups
+        let scale_bits_low = extract_6bit_from_packed(scales_mins_0, scales_mins_1, scales_mins_2, group_low);
+        let min_bits_low = extract_6bit_from_packed(scales_mins_0, scales_mins_1, scales_mins_2, group_low + 8u);
+        let scale_low = d * f32(scale_bits_low);
+        let min_low = dmin * f32(min_bits_low);
+
+        let scale_bits_high = extract_6bit_from_packed(scales_mins_0, scales_mins_1, scales_mins_2, group_high);
+        let min_bits_high = extract_6bit_from_packed(scales_mins_0, scales_mins_1, scales_mins_2, group_high + 8u);
+        let scale_high = d * f32(scale_bits_high);
+        let min_high = dmin * f32(min_bits_high);
+
+        // 8 u32 words (32 bytes) per 64-element block
+        let qs_base = base + 4u + j * 8u;
+
+        // Process 32 bytes (8 u32 words). Each byte has 2 elements (low and high nibbles)
+        for (var w: u32 = 0u; w < 8u; w++) {
+            let word = matrix_a_q4k[qs_base + w];
+
+            for (var b: u32 = 0u; b < 4u; b++) {
+                let byte_val = (word >> (b * 8u)) & 0xFFu;
+
+                let weight_low_4bit = byte_val & 0xFu;
+                let weight_high_4bit = byte_val >> 4u;
+
+                let weight_low_f32 = scale_low * f32(weight_low_4bit) - min_low;
+                let weight_high_f32 = scale_high * f32(weight_high_4bit) - min_high;
+
+                let byte_idx = w * 4u + b; // 0 to 31
+
+                let elem_low_idx = j * 64u + byte_idx;
+                let elem_high_idx = j * 64u + 32u + byte_idx;
+
+                sum = sum + (weight_low_f32 * vector_b[vec_offset + elem_low_idx]);
+                sum = sum + (weight_high_f32 * vector_b[vec_offset + elem_high_idx]);
             }
         }
     }
-    
     return sum;
 }
 
